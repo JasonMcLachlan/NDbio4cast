@@ -3,18 +3,139 @@ library(neon4cast)
 library(lubridate)
 #install.packages("rMR")
 library(rMR)
+library(dplyr)
 ##' Download Targets
 ##' @return data.frame in long format with days as rows, and time, site_id, variable, and observed as columns
-download_targets <- function(){
-  readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/terrestrial_30min/terrestrial_30min-targets.csv.gz", guess_max = 1e6)
-}
+target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/terrestrial_daily/terrestrial_daily-targets.csv.gz", guess_max = 1e6) |> 
+  na.omit()
+  target <- target %>% filter(variable == "nee")
 
 ##' Download Site metadata
 ##' @return metadata dataframe
-download_site_meta <- function(){
-  site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") 
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") 
   site_data %>% filter(as.integer(terrestrial) == 1)
-}
+  
+#Filter for UNDERC NEE
+underc <- target %>% filter(site_id == "UNDE")
+
+#Plot UNDERC NEE over time
+plot(underc$datetime,underc$observation, type="p", pch=1, cex=0.5, main="NEE at UNDERC", xlab="Date", ylab="NEE (gC/m2/day)")
+#Winter NEE values are in the range from 0 to slightly positive (emitting CO2 to atmosphere)
+#Summer NEE vallues drop in to the negatives (absorbing C02)
+
+forecast_date <- Sys.Date()#assign the nee forecast date as today (the date on the computer)
+noaa_date <- Sys.Date() - lubridate::days(1)#assign weather forecast date as yesterday (todays is not available yet)  
+  
+#Download past weather estimates from the NOAA using the neon4cast package
+df_past <- neon4cast::noaa_stage3()
+  
+ #Download future weather forecasts from the NOAA
+df_future <- neon4cast::noaa_stage2()
+
+sites <- unique(target$site_id) #unique site ids
+
+#Looking at variables that might impact NEE
+
+###TEMPERATURE
+#get past weather estimates of air temp from NOAA
+noaa_past_temp <- df_past |> 
+  dplyr::filter(site_id %in% sites,
+                variable == "air_temperature") |> 
+  dplyr::collect()
+
+#Filter for UNDERC
+noaa_past_temp_underc <- noaa_past_temp |> 
+  dplyr::filter(site_id == "UNDE" ) |> 
+  dplyr::collect()
+
+#Plot air temp over time
+ggplot(data = noaa_past_temp_underc, aes(x=datetime,y=prediction))+
+  geom_line()+
+  ggtitle("Air Temperature at UNDERC")
+
+#Join UNDERC past NEE and past temp data
+underc_nee_temp <- left_join(underc, noaa_past_temp_underc, by = c("datetime" = "datetime"))
+
+#Plot NEE and Temp over time
+#Not exactly sure how to plot both on the same plot with a y-axis scale that makes sense
+#ggplot(data = underc_nee_temp, aes(x=datetime))+
+  #geom_line(aes(y=observation))
+#ggplot(data = underc_nee_temp, aes(x=datetime))+
+  #geom_line(aes(y=prediction))
+
+#Plot NEE  and temp correlation
+plot(underc_nee_temp$observation,underc_nee_temp$prediction,xlab="NEE",ylab = "Air Temperature")
+#ggplot(data = underc_nee_temp, aes(x = observation, y = prediction))+
+  #geom_point() #ggplot version
+#air temps of <275 K (1.85 degrees C) have no negative NEE values and all values are close to 0
+#Temp needs to be above ~275 K for ecosystem to photosynthesize?
+
+
+###SUNLIGHT
+#past weather estimates of shortwave flux (solar radiation) from NOAA
+noaa_past_sw <- df_past |> 
+  dplyr::filter(site_id %in% sites,
+                variable == "surface_downwelling_shortwave_flux_in_air") |> 
+  dplyr::collect()
+
+#Filter for UNDERC
+noaa_past_sw_underc <- noaa_past_sw |> 
+  dplyr::filter(site_id == "UNDE" ) |> 
+  dplyr::collect()
+
+#Plot downwelling sw flux over time
+plot(noaa_past_sw_underc$datetime,noaa_past_sw_underc$prediction, main="Surface downwelling shortwave radiation at UNDERC")
+#way too many data points (multiple forecasts of measurements per day for 31 ensembles) to see anything
+
+#filter for one ensemble to hopefully visualize downwelling shortwave flux better
+noaa_past_sw_1 <- noaa_past_sw_underc |> 
+  dplyr::filter(parameter == 1 ) |> 
+  dplyr::collect()
+
+plot(noaa_past_sw_1$datetime,noaa_past_sw_1$prediction, main="Surface downwelling shortwave radiation at UNDERC")
+#multiple "curves", need to look more at what is causing them
+#points along y=0 from nighttime predictions with no incoming solar radiation
+
+
+#WATER AVAILABILITY
+#not sure precipitation is the best variable to represent this but it's most readily available
+#get past weather estimates of precipitation from NOAA
+noaa_past_precip <- df_past |> 
+  dplyr::filter(site_id %in% sites,
+                variable == "precipitation_flux") |> 
+  dplyr::collect()
+
+#Filter for UNDERC
+noaa_past_precip_underc <- noaa_past_precip |> 
+  dplyr::filter(site_id == "UNDE" ) |> 
+  dplyr::collect()
+
+#Plot precipitation over time
+ggplot(data = noaa_past_precip_underc, aes(x=datetime,y=prediction))+
+  geom_line()+
+  ggtitle("Precipitation at UNDERC")
+#There are some random negative precip values????
+
+
+
+
+                         
+#####################
+
+###ADDING FUTURE WEATHER DATA
+
+#future weather estimates of air temp
+noaa_future <- df_future |> 
+  dplyr::filter(cycle == 0,
+                start_date == as.character(noaa_date),
+                time >= lubridate::as_datetime(forecast_date), 
+                variable == "air_temperature") |> 
+  dplyr::collect()
+
+
+
+
+
 
 
 ##' append historical meteorological data into target file
