@@ -46,7 +46,7 @@ plot(DOYaverage$julianday,DOYaverage$NEEav, type="p", pch=1, cex=0.5, main="NEE 
 
 undercdata <- left_join(underc, DOYaverage, by = c("julianday" = "julianday"))
 
-#testing with random walk model, something is wrong from here down because the model only outputs positive NEE values when we need negative NEE in the summer
+#JAGS code for model
 NEEmodel = "
 model{
   
@@ -103,7 +103,7 @@ jags.out   <- coda.samples (model = j.model,
 time.rng = c(1,length(time))       ## adjust to zoom in and out
 out <- as.matrix(jags.out)         ## convert from coda to matrix  
 x.cols <- grep("^x",colnames(out)) ## grab all columns that start with the letter x
-ci <- apply(exp(out[,x.cols]),2,quantile,c(0.025,0.5,0.975)) 
+ci <- apply((out[,x.cols]),2,quantile,c(0.025,0.5,0.975)) 
 
 ModelMedian<- ci[2,]
 
@@ -116,4 +116,4 @@ ecoforecastR::ciEnvelope(time,ci[1,],ci[3,],col=ecoforecastR::col.alpha("lightBl
 points(time,y,pch="+",cex=0.5)
 points(time,ci[2,],pch="+",cex=0.5,col="red")
 
-#only outputting positive values?
+
