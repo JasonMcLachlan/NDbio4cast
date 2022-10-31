@@ -47,7 +47,7 @@ plot(DOYaverage$julianday,DOYaverage$NEE, type="p", pch=1, cex=0.5, main="NEE at
 undercdata <- left_join(underc, DOYaverage, by = c("julianday" = "julianday"))
 
 #testing with random walk model, something is wrong from here down because the model only outputs positive NEE values when we need negative NEE in the summer
-DOYmodel = "
+NEEmodel = "
 model{
   
   #### Data Model
@@ -87,7 +87,7 @@ for(i in 1:nchain){
 }
 
 #run model
-j.model   <- jags.model (file = textConnection(DOYmodel),
+j.model   <- jags.model (file = textConnection(NEEmodel),
                          data = data,
                          inits = init,
                          n.chains = 3)
