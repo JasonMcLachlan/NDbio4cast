@@ -42,7 +42,7 @@ underc$julianday <- yday(underc$datetime)
 DOYaverage <- underc %>% group_by(julianday) %>% summarise(NEEav = mean(observation))
 
 #plot NEE vs DAY of Year
-plot(DOYaverage$julianday,DOYaverage$NEE, type="p", pch=1, cex=0.5, main="NEE at UNDERC", xlab="Day of year", ylab="NEE (gC/m2/day)")
+plot(DOYaverage$julianday,DOYaverage$NEEav, type="p", pch=1, cex=0.5, main="NEE at UNDERC", xlab="Day of year", ylab="NEE (gC/m2/day)")
 
 undercdata <- left_join(underc, DOYaverage, by = c("julianday" = "julianday"))
 
