@@ -1,0 +1,274 @@
+---
+title: "PhenoData_TimeSeriesFit"
+author: "Cazimir Kowalski"
+date: "2022-10-28"
+output: html_document
+---
+
+## Install and load packages
+The packages bellow are necessary to visualize phenology data. Comment lines added to allow the document to knit. If you need the packages installed, uncomment the install.packages lines.
+```{r}
+#install.packages("readr")
+#install.packages("ggplot2")
+#install.packages("tidyr")
+#install.packageS("dplyr")
+#install.packageS("rjags")
+#install.packages("rnoaa")
+#install.packages("daymetr")
+
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(rjags)
+library(rnoaa)
+library(daymetr)
+#devtools::install_github("EcoForecast/ecoforecastR",force=TRUE)
+```
+
+## Read in site and phenology data
+Read in site data and most up to date phenology data quantified from phenocam data by the ecoforecasting initiative. We are only interested in deciduous broadleaf forests. This can be filtered in the site_data according to the pheno_cam vegetation type. The remaining sites can be used to filter the phenology data. 
+```{r}
+
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(phenology == 1, phenocam_vegetation == "deciduous broadleaf")
+head(site_data)
+
+NeonPheno =readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/phenology/phenology-targets.csv.gz", guess_max = 1e6) |> 
+  na.omit()
+head(NeonPheno)
+```
+
+## Manipulate phenology data.
+1) Remove sites that are not deciduous broadleaf (sites not present in the site_data).
+2) Add season column to group data based on spring green up or fall color change and leaf drop
+
+```{r}
+Pheno_decid = NeonPheno %>% #Filter sites accord to deciduous broadleaf
+  filter(site_id %in% unique(site_data$field_site_id)) 
+
+Pheno_seasons = Pheno_decid %>% #Add season variable
+  mutate(season = case_when(lubridate::month(datetime) <= 6 ~ "spring",
+                            lubridate::month(datetime) >= 7 ~ "fall")) 
+```
+
+## Visualize data
+Use ggplot to visualize rcc and gcc data during spring green up and fall color change and leaf drop. Can plot across years or choose a single year
+
+```{r, fig.width=10,fig.height=11}
+Pheno_seasons %>% 
+  filter(lubridate::year(datetime)== 2021) %>% #choosing 2021
+  filter(season == "spring") %>% #spring
+  filter(variable == "gcc_90") %>% #only interested in greeness 
+  ggplot(aes(x=datetime,y=observation)) +
+  geom_point(color="#228b22",size=0.75) + 
+  theme_classic() + 
+  labs(title="Spring phenology", x = "Date", y= "gcc_90") +
+  facet_wrap(~site_id,ncol=5) + 
+  theme(strip.background=element_blank(),panel.spacing=unit(1,"lines"))
+
+Pheno_seasons %>% 
+  filter(lubridate::year(datetime)== 2021) %>% #2021 YEAR
+  filter(season == "fall") %>% # Fall
+  ggplot(aes(x=datetime,y=observation,shape=variable)) + #Plot greeness and redness
+  geom_point(aes(color=variable),size=0.75) + 
+  scale_color_manual(values = c("#daa520","#228b22")) + 
+  theme_classic() + 
+  facet_wrap(~site_id,ncol=5) +
+  labs(title="Fall phenology", x = "Date", y= "Reflectance value",color="Reflectance index",shape="Reflectance index") + 
+  theme(strip.background=element_blank(),panel.spacing = unit(1,"lines"))
+```
+
+## Fit a historical time series using a Bayesian state-space model
+Code derived from exercise six of the Ecological Forecasting 
+```{r}
+#label data
+levels(as.factor(Pheno_decid$site_id))
+GRSM_pheno = NeonPheno %>% filter(site_id=="GRSM")
+time = (subset(GRSM_pheno, GRSM_pheno$variable == 'gcc_90'))$datetime
+y = (subset(GRSM_pheno, GRSM_pheno$variable == 'gcc_90'))$observation
+
+
+#define model
+RandomWalk = "
+model{
+  
+  #### Data Model
+  for(t in 1:n){
+    y[t] ~ dnorm(x[t],tau_obs)
+  }
+  
+  #### Process Model
+  for(t in 2:n){
+    x[t]~dnorm(x[t-1],tau_add) #Dependent on observation at previous time point
+  }
+  
+  #### Initial condition
+  x[1] ~ dnorm(x_ic,tau_ic) 
+  
+  #### Priors
+  tau_obs ~ dgamma(a_obs,r_obs)
+  tau_add ~ dgamma(a_add,r_add)
+}
+"
+
+data <- list(y=y,n=length(y),           ## data
+             x_ic=log(1000),tau_ic=100, ## initial condition prior
+             a_obs=1,r_obs=1,           ## obs error prior
+             a_add=1,r_add=1            ## process error prior
+)
+
+#set parameters for mcmc
+nchain = 3
+init <- list()
+for(i in 1:nchain){
+  y.samp = sample(y,length(y),replace=TRUE)
+  init[[i]] <- list(tau_add=1/var(diff(log(y.samp))),  ## initial guess on process precision
+                    tau_obs=5/var(log(y.samp)))        ## initial guess on obs precision
+}
+
+#actually define model as a variable
+j.model   <- jags.model (file = textConnection(RandomWalk),
+                         data = data,
+                         inits = init,
+                         n.chains = 3)
+
+
+## burn-in
+
+jags.burn   <- coda.samples (model = j.model,
+                            variable.names = c("tau_add","tau_obs"),
+                            n.iter = 1000)
+plot(jags.burn)
+
+
+jags.out   <- coda.samples (model = j.model,
+                            variable.names = c("x","tau_add","tau_obs"),
+                                n.iter = 10000)
+plot(jags.out[,c(1,2)]) #Plot after burn in
+
+
+#plotting the results
+time.rng = c(1,length(time))       ## adjust to zoom in and out
+out.grsm <- as.matrix(jags.out)         ## convert from coda to matrix
+x.cols.grsm <- grep("^x",colnames(out.grsm)) ## grab all columns that start with the letter x
+ci.grsm <- apply(out.grsm[,x.cols.grsm],2,quantile,c(0.025,0.5,0.975)) ## model was fit on log scale
+
+
+plot(time,ci.grsm[2,],type='n',ylim=c(0.2,0.6),ylab="GCC_90",xlim=time[time.rng],main="GRSM",xlab="Date")
+
+## adjust x-axis label to be monthly if zoomed
+if(diff(time.rng) < 100){ 
+  axis.Date(1, at=seq(time[time.rng[1]],time[time.rng[2]],by='month'), format = "%Y-%m")
+}
+ecoforecastR::ciEnvelope(time,ci.grsm[1,],ci.grsm[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
+points(time,y,pch="+",cex=0.5)
+```
+
+```{r}
+
+pheno.decid.gcc90 = Pheno_decid %>% filter(variable=="gcc_90")
+pheno.wide = pheno.decid.gcc90 %>% pivot_wider(names_from="site_id",values_from="observation")
+pheno.2021 = pheno.wide %>% filter(datetime>'2020-12-31')
+time = pheno.2021$datetime
+pheno.2021 = pheno.2021[,-c(1,2)]
+
+RandomWalk_multiplesites = "model{
+  
+  #loop over all sites
+  for (s in 1:ns){
+    
+    #### Data Model
+    for(i in 1:n){
+      y[i,s] ~ dnorm(x[i,s],tau_obs)
+    }
+  
+    #### Process Model
+    for(i in 2:n){
+      x[i,s]~dnorm(x[i-1,s],tau_add)
+    }
+  
+  
+  ## initial condition
+  x[1,s] ~ dnorm(x_ic,tau_ic)
+  }
+  
+  #### Priors
+  tau_obs ~ dgamma(a_obs,r_obs)
+  tau_add ~ dgamma(a_add,r_add)
+}"
+
+
+
+data <- list(y=as.matrix(pheno.2021),n=nrow(pheno.2021),
+             ns = ncol(pheno.2021),
+             x_ic=log(1000),tau_ic=100, ## initial condition prior
+             a_obs=1,r_obs=1,           ## obs error prior
+             a_add=1,r_add=1            ## process error prior
+)
+#set parameters for mcmc
+nchain = 3
+init <- list()
+for(i in 1:nchain){
+  y.samp = sample(y,length(y),replace=TRUE)
+  init[[i]] <- list(tau_add=1/var(diff(log(y.samp))),  ## initial guess on process precision
+                    tau_obs=5/var(log(y.samp)))        ## initial guess on obs precision
+}
+
+#actually define model as a variable
+s.model   <- jags.model (file = textConnection(RandomWalk_multiplesites),
+                         data = data,
+                         inits = init,
+                         n.chains = 3)
+
+jags.s.burn   <- coda.samples (model = s.model,
+                            variable.names = c("tau_add","tau_obs"),
+                            n.iter = 1000)
+plot(jags.s.burn)
+jags.s.out   <- coda.samples (model = s.model,
+                            variable.names = c("x","tau_add","tau_obs"),
+                                n.iter = 10000)
+plot(jags.s.out[,c(1,2)])
+
+```
+```{r}
+#### Helper function to parse JAGS variable names that include matrix syntax (e.g. "x[40,13]")
+##' @param w mcmc object containing matrix outputs
+##' @param pre prefix (variable name) for the matrix variable to be extracted
+##' @param numeric boolean, whether to coerce class to numeric
+parse.MatrixNames <- function(w, pre = "x", numeric = FALSE) {
+  w <- sub(pre, "", w)
+  w <- sub("[", "", w, fixed = TRUE)
+  w <- sub("]", "", w, fixed = TRUE)
+  w <- matrix(unlist(strsplit(w, ",")), nrow = length(w), byrow = TRUE)
+  if (numeric) {
+    class(w) <- "numeric"
+  }
+  colnames(w) <- c("row", "col")
+  return(as.data.frame(w))
+} # parse.MatrixNames
+
+out.s <- as.matrix(jags.s.out)
+x.cols.s = which(substr(colnames(out.s),1,1)=="x")   ## which columns are the state variable x
+ci.s <- apply(out.s[,x.cols.s],2,quantile,c(0.025,0.5,0.975)) #Credible interval
+ci.names.s = parse.MatrixNames(colnames(ci.s),numeric=TRUE)
+ci.t = t(ci.s) #Transpose credible intervals to parse visually if needed. 
+
+#layout(matrix(1:15,3,5)) ## arrange plots in a 5 x 3 matrix
+## plot sample of GCC_90 timeseries
+for(i in 1:data$ns){
+  sel = which(ci.names.s$col == i)
+  plot(time,ci.t[sel,2],type='n',ylim=c(-0.25,1),ylab="gcc_90",main=colnames(data$y)[i],xlab="Date")
+  ecoforecastR::ciEnvelope(x=time,ylo=ci.t[sel,1],yhi=ci.t[sel,3],col="lightBlue") #Something odd is happening here and switching the color of the credible intervals: light blue, and then white just before 2022 starts
+  points(time,data$y[,i],pch="+",cex=1.5)
+}
+  
+
+```
+
+
+
+
+
+
+
