@@ -1,20 +1,3 @@
-022 ND BIOS Biological Forecasting Class Repository Zhuoran Yu email: zyu3@nd.edu
-
-Kayla Anderson email: kander42@nd.edu
-
- main
-Stacy Mowry email: smowry@nd.edu
-
-Nick Andrysiak email: nandrysi@nd.edu
-
-Stacy Mowry
-email: smowry@nd.edu
-
-Nick Andrysiak
-email: nandrysi@nd.edu
-
-## Download and visualize data
-
 ##load libraries
 #install.packages("neonUtilities")
 library(neonUtilities)
@@ -153,35 +136,4 @@ plot(biomass.target$observation,biomass.target$target,type="p",xlab ="Biomass",y
 watertemp.target<-merge(target.data, watertemp.time.format, by="date", all=TRUE)
 plot(watertemp.target$observation,watertemp.target$target,type="p",xlab ="Water temp",ylab ="Chl-A")
 
-
-chla<-target$observation [target$site_id == "PRPO" & target$variable== "chla"]
-
-
-#Downlodading chemical prop of surface water data
-download_chem_prop<-function()
-{
-  chem_prop <- loadByProduct(dpID="DP1.20093.001", 
-                                    site=c("PRPO"),
-                                    check.size = F)
-                                    
-          #subset desired data
-time<-chem_prop$swc_fieldSuperParent$collectDate
-time<-lubridate::as_datetime(time)
-oxygen<-chem_prop$swc_fieldSuperParent$dissolvedOxygen
-temp<-chem_prop$swc_fieldSuperParent$waterTemp
-chem_prop<-cbind(time,oxygen,temp)
-  
-  
-  #return the dataframe
-  chem_prop<<- as.data.frame(chem_prop)
-  
-  
-  
-}
-
-oxygen<-chem_prop$oxygen
-  plot (chla, chem_prop$oxygen)
-  
-  
-  
 
