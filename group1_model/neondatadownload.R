@@ -85,7 +85,16 @@ noaa_past_sw_underc <- noaa_past_sw |>
   dplyr::collect()
 
 #Filter for 12:00pm daily
-noaa_past_sw_undec_daily=noaa_past_sw_underc[which(substr(noaa_past_sw_underc$datetime,12,17)=="12:00:"),]
+noaa_past_sw_underc_daily=noaa_past_sw_underc[which(substr(noaa_past_sw_underc$datetime,12,17)=="12:00:"),]
+#averaging by day
+noaa_past_sw_dailyavg=data.frame(matrix(ncol=2, nrow=length(unique(substr(noaa_past_sw_underc$datetime,1,11)))))
+noaa_past_sw_dailyavg[,1]=unique(substr(noaa_past_sw_underc$datetime,1,11))
+for(day in 1:nrow(noaa_past_sw_dailyavg)){
+  days=which(noaa_past_sw_dailyavg[day,1]==substr(noaa_past_sw_underc_daily$datetime, 1, 11))
+  value=(sum(noaa_past_sw_underc_daily[days,9]))/length(days)
+  noaa_past_sw_dailyavg[day,2]=value
+}
+colnames(noaa_past_sw_dailyavg)=c("Date", "Average_sw_at_noon")
 
 #Plot downwelling sw flux over time
 plot(noaa_past_sw_underc$datetime,noaa_past_sw_underc$prediction, main="Surface downwelling shortwave radiation at UNDERC")
