@@ -8,21 +8,21 @@ library(arrow)
 target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquatics/aquatics-targets.csv.gz") |>
   na.omit()
 
-#subset to CRAM (Crampton Lake at UNDERC)
-target_cram <- subset(target, site_id == "CRAM")
+#subset to BARC (Barco Lake in Florida)
+target_barc <- subset(target, site_id == "BARC")
 
 #subset data frames based on data type
-target_cram_do <- subset(target_cram, variable == "oxygen")
-target_cram_temp <- subset(target_cram, variable == "temperature")
-target_cram_chla <- subset(target_cram, variable == "chla")
+target_barc_do <- subset(target_barc, variable == "oxygen")
+target_barc_temp <- subset(target_barc, variable == "temperature")
+target_barc_chla <- subset(target_barc, variable == "chla")
 
 #plot time-series for each data type
-ggplot(data = target_cram_do, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Dissolved oxygen")
-ggplot(data = target_cram_temp, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Temperature")
-ggplot(data = target_cram_chla, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Chlorophyll a")
+ggplot(data = target_barc_do, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Dissolved oxygen")
+ggplot(data = target_barc_temp, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Temperature")
+ggplot(data = target_barc_chla, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Chlorophyll a")
 
 #past NOAA data
-sites <- unique(target_cram$site_id)
+sites <- unique(target_barc$site_id)
 df_past <- neon4cast::noaa_stage3()
 noaa_past <- df_past |> 
   dplyr::filter(site_id %in% sites,
@@ -32,15 +32,33 @@ noaa_past <- df_past |>
 
 #plot relationships
 
+
+forecast_date <- Sys.Date()#assign the nee forecast date as today (the date on the computer)
+noaa_date <- Sys.Date() - lubridate::days(1)#assign weather forecast date as yesterday (todays is not available yet)  
+
 #future NOAA data
 #set forecast date as yesterday
 #error here!
+<<<<<<< HEAD
 forecast_date <- Sys.Date() - lubridate::days(1)
-df_future <- neon4cast::noaa_stage2(cycle = 0)
+df_future <- neon4cast::noaa_stage2()
+=======
+df_future <- neon4cast::noaa_stage2()
 noaa_future <- df_future |> 
-  #start date filter error
-  dplyr::filter(variable == "air_temperature",
-                start_date == forecast_date) |> 
+  dplyr::filter(start_date == as.character(noaa_date),
+                variable == "air_temperature") |> 
+  dplyr::rename(ensemble = parameter) |> 
+  dplyr::collect()
+
+##
+
+
+
+df_future <- neon4cast::noaa_stage2(cycle = 0)
+>>>>>>> 1dbcad3452e826786e509479b7678bd818bd99ba
+noaa_future <- df_future |> 
+  dplyr::filter(start_date == as.character(forecast_date),
+                variable == "air_temperature") |> 
   dplyr::rename(ensemble = parameter) |> 
   dplyr::collect()
 

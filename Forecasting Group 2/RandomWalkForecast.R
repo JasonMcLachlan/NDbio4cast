@@ -6,6 +6,7 @@ library(arrow)
 library(rjags)
 library(rnoaa)
 library(daymetr)
+library(padr)
 devtools::install_github("EcoForecast/ecoforecastR",force=TRUE)
 
 #load target data
@@ -14,16 +15,21 @@ target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquati
 
 #subset to BARC (Barco Lake in Florida)
 target_barc <- subset(target, site_id == "BARC")
+target_barc <- pad(target_barc)
 
 #subset data frames based on data type
 target_barc_do <- subset(target_barc, variable == "oxygen")
+target_barc_do <- pad(target_barc_do)
 target_barc_temp <- subset(target_barc, variable == "temperature")
+target_barc_temp <- pad(target_barc_temp)
 target_barc_chla <- subset(target_barc, variable == "chla")
+target_barc_chla <- pad(target_barc_chla)
 
 #set up model variables
 time <- as.Date(target_barc_do$datetime)
+time <- append(time, tail(time, 1) + c(1:30))
 y <- as.vector(target_barc_do$observation)
-
+y <- append(y, rep(NA,30))
 
 #Random Walk Timeseries Model
 RandomWalk = "
@@ -74,7 +80,7 @@ plot(jags.out)
 
 time.rng = c(1,length(time))       ## adjust to zoom in and out
 out0 <- as.matrix(jags.out)         ## convert from coda to matrix  
-x.cols <- as.data.frame(out0[,1:1296]) ## grab all columns that contain data for a time point
+x.cols <- as.data.frame(out0[,1:length(y)]) ## grab all columns that contain data for a time point
 ci0 <- apply(x.cols,2,quantile,c(0.025,0.5,0.975)) ## model was NOT fit on log scale
 
 plot(time,ci0[2,],type='l',ylim=range(y,na.rm=TRUE),ylab="DO",log='y',xlim=time[time.rng])
@@ -84,15 +90,3 @@ if(diff(time.rng) < 100){
 }
 ecoforecastR::ciEnvelope(time,ci0[1,],ci0[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
 points(time,y,pch="+",cex=0.5)
-
-
-
-hist(1/sqrt(out0[,1]),main=colnames(out0)[1])
-hist(1/sqrt(out0[,2]),main=colnames(out0)[2])
-
-#We'll also want to look at the joint distribution of the two parameters to check whether the two parameters strongly covary.
-
-plot(out0[,1],out0[,2],pch=".",xlab=colnames(out0)[1],ylab=colnames(out0)[2])
-cor(out0[,1:2])
-#change
-
