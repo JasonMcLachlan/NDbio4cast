@@ -84,6 +84,10 @@ gc()
 
 ##DRIVERS
 
+###LAI
+#will try to get historic LAI averages for each day of year from MODIS data
+#see ModisDataTest.R
+
 ###PAST SUNLIGHT
 #past weather estimates of shortwave flux (solar radiation) from NOAA
 noaa_past_sw <- past_drivers |> 
@@ -233,7 +237,7 @@ data$sw = site_target$downwelling_sw[match(time,site_target$datetime)]
 data$temp = site_target$air_temp[match(time,site_target$datetime)]
 
 #add drivers to DLM
-ef.out <- ecoforecastR::fit_dlm(model=list(obs="y",fixed="~ 1 + X + sw + temp"),data)
+ef.out <- ecoforecastR::fit_dlm(model=list(obs="y",fixed="~ 1 + X + sw"),data)#sw as a driver, not using temp for now
 
 
 #Plot DLM forecast
