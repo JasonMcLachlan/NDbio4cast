@@ -1,5 +1,4 @@
-#fair warning that this takes super long to run when filtering noaa data
-#need to update filtering lines to be more efficient
+#fair warning that this takeslong to run when filtering noaa data
 library(tidyverse)
 library(neon4cast)
 library(lubridate)
@@ -24,17 +23,50 @@ Site <- target %>% filter(site_id == "UNDE")
 forecast_date <- Sys.Date()#assign the nee forecast date as today (the date on the computer)
 noaa_date <- Sys.Date() - lubridate::days(1)#assign weather forecast date as yesterday (todays is not available yet)  
 
+###FILTER WEATHER DATA FOR SITES AND DRIVERS
+
 #Download past weather estimates from the NOAA using the neon4cast package
 df_past <- neon4cast::noaa_stage3()
+
+#filter for past weather estimates for our site from NOAA
+past_drivers <- df_past |> 
+  dplyr::filter(site_id == "UNDE",
+                variable %in%  c("surface_downwelling_shortwave_flux_in_air", "air_temperature")
+  ) |> 
+  dplyr::collect()
+
+#Filter + aggregate for daily averages
+past_drivers <- past_drivers %>% 
+  mutate(date = as_date(datetime)) %>% 
+  group_by(date,variable) %>% 
+  summarize(driver_value = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
+  rename(datetime = date)
+
+rm(df_past)
 
 #Download future weather forecasts from the NOAA
 df_future <- neon4cast::noaa_stage2(cycle = 0)
 
-#Ideally do all driver filtering for df_past and df_future here 
-#and keep the filtered versions but remove the original df_past 
-#and df_future because they are too big
+#filter for future weather estimates for our site from NOAA
+future_drivers <- df_future |> 
+  dplyr::filter(site_id == "UNDE",
+                reference_datetime == as.Date(noaa_date),
+                datetime >= lubridate::as_datetime(forecast_date),
+                variable %in%  c("surface_downwelling_shortwave_flux_in_air", "air_temperature") 
+  ) |>
+  dplyr::rename(ensemble = parameter) %>%
+  dplyr::select(datetime, prediction, ensemble, variable) |>
+  dplyr::collect()
 
-sites <- unique(target$site_id) #unique site ids
+#Filter + aggregate for daily averages
+future_drivers <- future_drivers %>% 
+  mutate(date = as_date(datetime)) %>% 
+  group_by(date,variable) %>% 
+  summarize(driver_value = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
+  rename(datetime = date)
+
+rm(df_future)
+gc()
 
 ##Julian Day stuff to possibly add day of year (DOY) as a stand-in for LAI if we can't get LAI to work
 ##unused so far
@@ -54,128 +86,91 @@ sites <- unique(target$site_id) #unique site ids
 
 ###PAST SUNLIGHT
 #past weather estimates of shortwave flux (solar radiation) from NOAA
-noaa_past_sw <- df_past |> 
-  dplyr::filter(site_id %in% sites,
-                variable == "surface_downwelling_shortwave_flux_in_air", 
-  ) |> 
+noaa_past_sw <- past_drivers |> 
+  dplyr::filter( variable == "surface_downwelling_shortwave_flux_in_air") |> 
+  dplyr::select(datetime, driver_value) |>
   dplyr::collect()
-
-#Filter for one site
-noaa_past_sw_Site <- noaa_past_sw |> 
-  dplyr::filter(site_id == "UNDE" ) |> 
-  dplyr::collect()
-
-#Filter + aggregate for daily averages
-noaa_past_sw_mean <- noaa_past_sw_Site %>% 
-  mutate(date = as_date(datetime)) %>% 
-  group_by(date) %>% 
-  summarize(downwelling_sw = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
-  rename(datetime = date)
 
 #Calculate mean sw over all past sw data
-swBar = mean(noaa_past_sw_mean$downwelling_sw,na.rm=TRUE)
+swBar = mean(noaa_past_sw$driver_value,na.rm=TRUE)
 
 #Convert downwelling sw to anomalies
-noaa_past_sw_mean$downwelling_sw = noaa_past_sw_mean$downwelling_sw - swBar
+noaa_past_sw$driver_value = noaa_past_sw$driver_value - swBar
+noaa_past_sw = rename(noaa_past_sw, downwelling_sw = driver_value)
 
 #Merge in past sw data into the targets file, matching by date.
 site_target_past <- Site |>
   select(datetime, site_id, variable, observation) |>
   dplyr::filter(variable %in% c("nee")) |>
-  pivot_wider(names_from = "variable", values_from = "observation") |>
-  left_join(noaa_past_sw_mean, by = c("datetime"))
+  pivot_wider(names_from= "variable", values_from = "observation")
+site_target_past<-left_join(site_target_past, noaa_past_sw, by = c("datetime"))
 
 ###FUTURE SUNLIGHT
-noaa_future_sw <- df_future |>
-  dplyr::filter(site_id == "UNDE",
-                reference_datetime == as.Date(noaa_date),
-                datetime >= lubridate::as_datetime(forecast_date),
-                variable == "surface_downwelling_shortwave_flux_in_air") |>
-  dplyr::rename(ensemble = parameter) %>%
-  dplyr::select(datetime, prediction, ensemble) |>
+noaa_future_sw <- future_drivers |>
+  dplyr::filter(variable == "surface_downwelling_shortwave_flux_in_air") |>
+  dplyr::select(datetime, driver_value) |>
   dplyr::collect()
 
-#Filter + aggregate for daily averages
-noaa_future_sw_mean <- noaa_future_sw %>% 
-  mutate(date = as_date(datetime)) %>% 
-  group_by(date) %>% 
-  summarize(downwelling_sw = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
-  rename(datetime = date)
-
 #Convert future downwelling sw to anomalies
-noaa_future_sw_mean$downwelling_sw = noaa_future_sw_mean$downwelling_sw - swBar
-
+noaa_future_sw$driver_value = noaa_future_sw$driver_value - swBar
+noaa_future_sw = rename(noaa_future_sw, downwelling_sw = driver_value)
 
 ###PAST TEMPERATURE
 #past weather estimates of air temperature from NOAA
-noaa_past_temp <- df_past |> 
-  dplyr::filter(site_id %in% sites,
-                variable == "air_temperature", 
-  ) |> 
+noaa_past_temp <-past_drivers |> 
+  dplyr::filter( variable == "air_temperature") |> 
+  dplyr::select(datetime, driver_value) |>
   dplyr::collect()
-
-#Filter for one site
-noaa_past_temp_Site <- noaa_past_temp |> 
-  dplyr::filter(site_id == "UNDE" ) |> 
-  dplyr::collect()
-
-#Filter + aggregate for daily averages
-noaa_past_temp_mean <- noaa_past_temp_Site %>% 
-  mutate(date = as_date(datetime)) %>% 
-  group_by(date) %>% 
-  summarize(air_temp = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
-  rename(datetime = date)
 
 #Calculate mean temp over all past sw data
-tempBar = mean(noaa_past_temp_mean$air_temp,na.rm=TRUE)
+tempBar = mean(noaa_past_temp$driver_value,na.rm=TRUE)
 
 #Convert temp to anomalies
-noaa_past_temp_mean$air_temp = noaa_past_temp_mean$air_temp - tempBar
+noaa_past_temp$driver_value = noaa_past_temp$driver_value - tempBar
+noaa_past_temp = rename(noaa_past_temp, air_temp = driver_value)
 
 #Merge in past temp data into the targets file, matching by date.
 site_target_past <- site_target_past |>
-  left_join(noaa_past_temp_mean, by = c("datetime"))
+  left_join(noaa_past_temp, by = c("datetime"))
 
 ###FUTURE TEMPERATURE
-noaa_future_temp <- df_future |>
-  dplyr::filter(site_id == "UNDE",
-                reference_datetime == as.Date(noaa_date),
-                datetime >= lubridate::as_datetime(forecast_date),
-                variable == "air_temperature") |>
-  dplyr::rename(ensemble = parameter) %>%
-  dplyr::select(datetime, prediction, ensemble) |>
+noaa_future_temp <- future_drivers |>
+  dplyr::filter(variable == "air_temperature") |>
+  dplyr::select(datetime, driver_value) |>
   dplyr::collect()
 
-#Filter + aggregate for daily averages
-noaa_future_temp_mean <- noaa_future_temp %>% 
-  mutate(date = as_date(datetime)) %>% 
-  group_by(date) %>% 
-  summarize(air_temp = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
-  rename(datetime = date)
-
-#Convert future temp to anomalies
-noaa_future_temp_mean$air_temp = noaa_future_temp_mean$air_temp - tempBar
-
+#Convert future downwelling sw to anomalies
+noaa_future_temp$driver_value = noaa_future_temp$driver_value - tempBar
+noaa_future_temp = rename(noaa_future_temp, air_temp = driver_value)
 
 
 ###PREPPING FUTURE DATA
 #confusing code that needs to be commented:)
-#adding all future projections to one df
-past_length<-length(noaa_past_sw_mean$datetime)
+#adding all future projections to one df with past data
+past_length<-length(noaa_past_sw$datetime)
 past_length7<-past_length-6
 future_data <- data.frame()
-future_data[1:7,1]<-noaa_past_sw_mean[past_length7:past_length,1]
+future_data[1:7,1]<-noaa_past_sw[past_length7:past_length,1]
 future_data[,2:3]<-NA
-future_data[1:7,4]<-noaa_past_sw_mean[past_length7:past_length,2]
-future_data[1:7,5]<-noaa_past_temp_mean[past_length7:past_length,2]
-future_data[8:42,1]<-noaa_future_sw_mean[1:35,1]
-future_data[8:42,4]<-noaa_future_sw_mean[1:35,2]
-future_data[8:42,5]<-noaa_future_temp_mean[1:35,2]
+future_data[1:7,4]<-noaa_past_sw[past_length7:past_length,2]
+future_data[1:7,5]<-noaa_past_temp[past_length7:past_length,2]
+future_data[8:42,1]<-noaa_future_sw[1:35,1]
+future_data[8:42,4]<-noaa_future_sw[1:35,2]
+future_data[8:42,5]<-noaa_future_temp[1:35,2]
 future_data <- future_data %>% mutate_all(~ifelse(is.nan(.), NA, .))
 colnames(future_data)<-c("datetime", "site_id", "nee", "downwelling_sw", "air_temp")
 future_data[,1]<- as.Date(future_data[,1], origin = "1970-01-01")
 
-site_target<- rbind(site_target_past,future_data)
+target_data<- rbind(site_target_past,future_data)
+
+#add NA values to all data gaps
+dateseqstart<- target_data$datetime[1]
+dateseqend<-target_data$datetime[length(target_data$datetime)]
+dateseq<-seq(from=dateseqstart, to=dateseqend, by="day")
+
+site_target<- as.data.frame(dateseq)
+site_target<-rename(site_target, datetime = dateseq)
+site_target<-left_join(site_target, target_data, by = c("datetime"))
 
 
 ###MODEL
