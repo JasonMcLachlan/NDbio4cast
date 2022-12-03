@@ -95,3 +95,4 @@ temp_forecast <- aggregate(forecasted_water_temperature ~ date, temp_forecast, m
 colnames(temp_forecast) <- c("datetime", "observation")
 
 
+

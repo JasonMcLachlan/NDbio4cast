@@ -90,3 +90,31 @@ if(diff(time.rng) < 100){
 }
 ecoforecastR::ciEnvelope(time,ci0[1,],ci0[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
 points(time,y,pch="+",cex=0.5)
+
+#Zoom in to Random Walk Forecast
+
+time.rng = c(1,length(time))       ## adjust to zoom in and out
+out0 <- as.matrix(jags.out)         ## convert from coda to matrix  
+x.cols <- as.data.frame(out0[,1:length(y)]) ## grab all columns that contain data for a time point
+ci0 <- apply(x.cols,2,quantile,c(0.025,0.5,0.975)) ## model was NOT fit on log scale
+
+plot(time,ci0[2,],type='l',ylim=range(y,na.rm=TRUE),ylab="DO",log='y',xlim=time[time.rng])
+## adjust x-axis label to be monthly if zoomed
+if(diff(time.rng) < 100){ 
+  axis.Date(1, at=seq(time[time.rng[1]],time[time.rng[2]],by='month'), format = "%Y-%m")
+}
+ecoforecastR::ciEnvelope(time,ci0[1,],ci0[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
+points(time,y,pch="+",cex=0.5)
+
+
+
+
+
+
+
+
+
+
+
+
+
