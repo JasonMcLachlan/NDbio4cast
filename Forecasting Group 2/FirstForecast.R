@@ -39,18 +39,20 @@ colnames(jags_df) <- c("datetime", "watertemp", "site_id", "variable", "DO")
 jags_df <- jags_df[!duplicated(jags_df$datetime),]
 
 #tail(target_barc_temp)
-Temp <- jags_df$watertemp
-y <- jags_df$DO
+y <- as.vector(jags_df$DO)
+#y <- append(y, rep(NA,30))
+
 time <- as.Date(jags_df$datetime)
+#time <- append(time, tail(time, 1) + c(1:30))
+
+Temp <- jags_df$watertemp
+Temp <- with(jags_df, impute(watertemp, mean))
 
 #set up model variables
 # time <- as.Date(target_barc_do$datetime)
 # time <- append(time, tail(time, 1) + c(1:30))
 # y <- as.vector(target_barc_do$observation)
 # y <- append(y, rep(NA,30))
-
-Temp <- with(jags_df, impute(watertemp, mean))
-#y <- with(jags_df, impute(DO, mean))
 
 data <- list(Temp = Temp, y = y, n = length(y), ##data
              x_ic=7,tau_ic=3, ## initial condition error prior
@@ -62,17 +64,14 @@ data <- list(Temp = Temp, y = y, n = length(y), ##data
 WaterTempDO = "
 model{
   #### Data Model
-  for(t in 1:n)
-  {
+  for(t in 1:n){
     y[t] ~ dnorm(x[t],tau_obs) ##Observation uncertainty
-    Temp_a[t] ~ dnorm(muTemp[1],tauTemp[1])
   }
   #### Process Model
-  for(t in 2:n)
-  {
-    mu[t] <- x[t-1]  + betaX*x[t-1] + betaTemp*Temp_a[t]
-    x[t]~dnorm(mu[t],tau_add) T(0,200) ##Process uncertainty 
-    Temp[t] ~ dnorm(Temp_a[t], tau_driv) ##Driver uncertainty 
+  for(t in 2:n){
+    mu[t] <- x[t-1] + betaX*x[t-1] + betaTemp*Temp_a[t]
+    x[t]~dnorm(mu[t],tau_add) ##Process uncertainty 
+    Temp_a[t] ~ dnorm(Temp[t], tau_driv) ##Driver uncertainty 
   }
   #### Priors
   x[1] ~ dnorm(x_ic,tau_ic) ##Initial condition uncertainty 
@@ -81,8 +80,6 @@ model{
   tau_driv ~ dgamma(a_driv,r_driv)
   betaX ~ dnorm(0,0.1) ##Parameter uncertainty 
   betaTemp ~ dnorm(0,0.1) ##Parameter uncertainty 
-  muTemp ~ dnorm(0,0.001)
-  tauTemp ~ dnorm(0.01,0.01)
 }
 "
 
@@ -91,9 +88,9 @@ nchain = 3
 init <- list()
 for(i in 1:nchain){
   y.samp = sample(y,length(y),replace=TRUE)
-  init[[i]] <- list(r_add=1/var(diff(log(y.samp))),  ## initial guess on process precision
-                    r_obs=5/var(log(y.samp)),
-                    r_driv=1/var(diff(log(y.samp))))
+  init[[i]] <- list(tau_add=1/var(diff(log(y.samp))),  ## initial guess on process precision
+                    tau_obs=5/var(log(y.samp)),
+                    tau_driv=1/var(diff(log(y.samp))))
 }
 
 j.model   <- jags.model (file = textConnection(WaterTempDO),
@@ -102,10 +99,10 @@ j.model   <- jags.model (file = textConnection(WaterTempDO),
                          n.chains = 3)
 
 jags.out   <- coda.samples (model = j.model,
-                            variable.names = c("y", "r_add","r_obs", "r_driv"),
+                            variable.names = c("x", "tau_add", "tau_obs", "tau_driv"),
                             n.iter = 1000)
 #plot(jags.out)
-time.rng = c(1,length(time))
+time.rng = c(1900,length(time))
 #time.rng = c(1,length(time))       ## adjust to zoom in and out
 out0 <- as.matrix(jags.out)         ## convert from coda to matrix  
 x.cols <- as.data.frame(out0[,1:length(y)]) ## grab all columns that contain data for a time point
@@ -121,5 +118,5 @@ if(diff(time.rng) < 100){
 ecoforecastR::ciEnvelope(time,ci0[1,],ci0[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
 points(time,y,pch="+",cex=0.5)
 
-plot(time, Temp, type="l", ylim=c(0,40))
-lines(time, y)
+#plot(time, Temp, type="l", ylim=c(0,40))
+#lines(time, y)
