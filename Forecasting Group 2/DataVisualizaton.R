@@ -17,8 +17,8 @@ target_barc_temp <- subset(target_barc, variable == "temperature")
 target_barc_chla <- subset(target_barc, variable == "chla")
 
 #plot time-series for each data type
-ggplot(data = target_barc_do, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Dissolved oxygen")
-ggplot(data = target_barc_temp, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Temperature")
+ggplot(data = target_barc_do, aes(x=datetime, y=observation)) + geom_line() + ggtitle("Dissolved oxygen")
+ggplot(data = target_barc_temp, aes(x=datetime, y=observation)) + geom_line() + ggtitle("Water Temperature")
 ggplot(data = target_barc_chla, aes(x=datetime, y=observation)) + geom_point() + ggtitle("Chlorophyll a")
 
 #past NOAA data
@@ -29,6 +29,12 @@ noaa_past <- df_past |>
                 variable == "air_temperature") |> 
   dplyr::rename(ensemble = parameter) |> 
   dplyr::collect()
+
+
+head(noaa_past)
+
+
+
 
 #plot relationships
 
@@ -55,7 +61,6 @@ noaa_future <- df_future |>
 
 
 df_future <- neon4cast::noaa_stage2(cycle = 0)
->>>>>>> 1dbcad3452e826786e509479b7678bd818bd99ba
 noaa_future <- df_future |> 
   dplyr::filter(start_date == as.character(forecast_date),
                 variable == "air_temperature") |> 
