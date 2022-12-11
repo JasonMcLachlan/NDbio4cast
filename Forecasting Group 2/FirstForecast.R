@@ -69,7 +69,7 @@ model{
   }
   #### Process Model
   for(t in 2:n){
-    mu[t] <- x[t-1] + betaX*x[t-1] - betaTemp*Temp_a[t]
+    mu[t] <- x[t-1] + betaX*x[t-1] _ betaTemp*Temp_a[t]
     x[t]~dnorm(mu[t],tau_add) ##Process uncertainty 
     Temp_a[t] ~ dnorm(Temp[t], tau_driv) ##Driver uncertainty 
   }
