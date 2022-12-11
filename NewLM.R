@@ -16,6 +16,9 @@ target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquati
 #subset to BARC (Barco Lake in Florida)
 target_barc <- subset(target, site_id == "BARC")
 
+
+
+
 #past NOAA data
 sites <- unique(target_barc$site_id)
 df_past <- neon4cast::noaa_stage3()
@@ -54,6 +57,17 @@ noaa_mean_forecast <- function(site, var, reference_date) {
     dplyr::collect()
   
 }
+
+
+target_barc <- target_barc |> 
+  select(datetime, site_id, variable, observation) |> 
+  filter(variable %in% c("temperature", "oxygen")) |> 
+  pivot_wider(names_from = "variable", values_from = "observation")
+
+target <- left_join(target_barc, noaa_past_mean, by = c("datetime","site_id"))
+
+sites <- unique(target$site_id)
+#subset_site_data <- site_target[917:nrow(site_target),]
 
 noaa_date <- Sys.Date() - lubridate::days(1)
 noaa_future <- noaa_mean_forecast("BARC", "TMP", noaa_date)
