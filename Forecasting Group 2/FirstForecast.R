@@ -69,7 +69,7 @@ model{
   }
   #### Process Model
   for(t in 2:n){
-    mu[t] <- x[t-1] + betaX*x[t-1] + betaTemp*Temp_a[t]
+    mu[t] <- x[t-1] + betaX*x[t-1] - betaTemp*Temp_a[t]
     x[t]~dnorm(mu[t],tau_add) ##Process uncertainty 
     Temp_a[t] ~ dnorm(Temp[t], tau_driv) ##Driver uncertainty 
   }
@@ -100,9 +100,9 @@ j.model   <- jags.model (file = textConnection(WaterTempDO),
 
 jags.out   <- coda.samples (model = j.model,
                             variable.names = c("x", "tau_add", "tau_obs", "tau_driv"),
-                            n.iter = 1000)
+                            n.iter = 10000)
 #plot(jags.out)
-time.rng = c(1900,length(time))
+time.rng = c(1,length(time))
 #time.rng = c(1,length(time))       ## adjust to zoom in and out
 out0 <- as.matrix(jags.out)         ## convert from coda to matrix  
 x.cols <- as.data.frame(out0[,1:length(y)]) ## grab all columns that contain data for a time point
