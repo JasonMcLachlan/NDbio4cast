@@ -36,6 +36,8 @@ noaa_past_mean <- noaa_past |>
   mutate(air_temperature = air_temperature - 273.15)
 
 
+noaa_date <- Sys.Date() - lubridate::days(1)
+
 
 #New Way of Accessing Forecasted Temperature Data
 noaa_mean_forecast <- function(site, var, reference_date) {
@@ -46,7 +48,7 @@ noaa_mean_forecast <- function(site, var, reference_date) {
   # stage1 air temp is Celsius
   arrow::open_dataset(s3) |>
     dplyr::filter(site_id == site,
-                  datetime >= lubridate::as_datetime(forecast_date),
+                  datetime >= lubridate::as_datetime(noaa_date),
                   variable == var) |>
     dplyr::select(datetime, prediction, parameter) |>
     dplyr::mutate(datetime = as_date(datetime)) |>
@@ -58,6 +60,7 @@ noaa_mean_forecast <- function(site, var, reference_date) {
   
 }
 
+noaa_future <- noaa_mean_forecast("BARC", "TMP", noaa_date)
 
 target_barc <- target_barc |> 
   select(datetime, site_id, variable, observation) |> 
@@ -69,8 +72,6 @@ target <- left_join(target_barc, noaa_past_mean, by = c("datetime","site_id"))
 sites <- unique(target$site_id)
 #subset_site_data <- site_target[917:nrow(site_target),]
 
-noaa_date <- Sys.Date() - lubridate::days(1)
-noaa_future <- noaa_mean_forecast("BARC", "TMP", noaa_date)
 
 
 temp_forecast <- NULL
