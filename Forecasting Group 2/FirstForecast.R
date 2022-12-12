@@ -11,7 +11,8 @@ library(padr)
 #install.packages("Hmisc")
 library(Hmisc)
 
-source("~/WaterTemperaturePrediction.R")
+source("~/Downloads/NDbio4cast/Forecasting Group 2/NewLM.R")
+
 
 #load target data
 target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquatics/aquatics-targets.csv.gz") |>
@@ -69,7 +70,7 @@ model{
   }
   #### Process Model
   for(t in 2:n){
-    mu[t] <- x[t-1] + betaX*x[t-1] _ betaTemp*Temp_a[t]
+    mu[t] <- x[t-1] + betaX*x[t-1] + betaTemp*Temp_a[t]
     x[t]~dnorm(mu[t],tau_add) ##Process uncertainty 
     Temp_a[t] ~ dnorm(Temp[t], tau_driv) ##Driver uncertainty 
   }
