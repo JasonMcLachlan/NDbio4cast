@@ -87,7 +87,7 @@ for(i in 1:length(sites)){
   #if(length(which(!is.na(site_target$air_temperature) & !is.na(site_target$temperature))) > 0){ #just an optional check if you're running it in a workflow
   
   #Fit linear model based on past data: water temperature = m * air temperature + b
- 
+  
   fit <- lm(temperature ~ air_temperature, data = site_target)
   
   noaa_subset <- subset(noaa_future, variable = "air_temperature")
