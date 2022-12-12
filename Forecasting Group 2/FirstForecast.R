@@ -106,7 +106,7 @@ jags.out   <- coda.samples (model = j.model,
 time.rng = c(1,length(time))
 #time.rng = c(1,length(time))       ## adjust to zoom in and out
 out0 <- as.matrix(jags.out)         ## convert from coda to matrix  
-x.cols <- as.data.frame(out0[,1:length(y)]) ## grab all columns that contain data for a time point
+x.cols <- as.data.frame(out0[,4:(length(y)+3)]) ## grab all columns that contain data for a time point
 ci0 <- apply(x.cols,2,quantile,c(0.025,0.5,0.975)) ## model was NOT fit on log scale
 #ci0 <- subset(ci0, select = -c(r_add, r_driv, r_obs))
 #length(ci0[2,])
