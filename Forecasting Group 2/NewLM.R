@@ -8,6 +8,11 @@ library(rjags)
 library(rnoaa)
 library(daymetr)
 library(padr)
+
+
+##### RUN THIS FIRST #########
+
+
 #devtools::install_github("EcoForecast/ecoforecastR",force=TRUE)
 #load target data
 target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquatics/aquatics-targets.csv.gz") |>

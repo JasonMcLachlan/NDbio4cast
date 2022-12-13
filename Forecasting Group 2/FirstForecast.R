@@ -11,7 +11,9 @@ library(padr)
 #install.packages("Hmisc")
 library(Hmisc)
 
-source("~/Downloads/NDbio4cast/Forecasting Group 2/NewLM.R")
+### RUN SECOND AFTER RUNNING NewLM.R #################
+
+#source("~/Downloads/NDbio4cast/Forecasting Group 2/NewLM.R")
 
 
 #load target data
@@ -41,7 +43,11 @@ jags_df <- jags_df[!duplicated(jags_df$datetime),]
 
 #tail(target_barc_temp)
 y <- as.vector(jags_df$DO)
-#y <- append(y, rep(NA,30))
+
+
+#y[(1968-365):1968] <- rep(NA, 365) #Use this for an optional hindcast which predicts the last year of data
+
+#y <- append(y, rep(NA,30)) #Old code stored for later
 
 time <- as.Date(jags_df$datetime)
 #time <- append(time, tail(time, 1) + c(1:30))
@@ -101,7 +107,7 @@ j.model   <- jags.model (file = textConnection(WaterTempDO),
 
 jags.out   <- coda.samples (model = j.model,
                             variable.names = c("x", "tau_add", "tau_obs", "tau_driv"),
-                            n.iter = 10000)
+                            n.iter = 1000)
 #plot(jags.out)
 time.rng = c(1,length(time))
 #time.rng = c(1,length(time))       ## adjust to zoom in and out
@@ -111,7 +117,8 @@ ci0 <- apply(x.cols,2,quantile,c(0.025,0.5,0.975)) ## model was NOT fit on log s
 #ci0 <- subset(ci0, select = -c(r_add, r_driv, r_obs))
 #length(ci0[2,])
 #length(time)
-plot(time,ci0[2,],type='l',ylim=range(y,na.rm=TRUE),ylab="DO",log='y',xlim=time[time.rng])
+
+plot(time,ci0[2,],type='l',ylim=range(y,na.rm=TRUE),ylab="DO",log='y',xlim=time[time.rng], col = 2)
 ## adjust x-axis label to be monthly if zoomed
 if(diff(time.rng) < 100){ 
   axis.Date(1, at=seq(time[time.rng[1]],time[time.rng[2]],by='month'), format = "%Y-%m")
