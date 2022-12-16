@@ -7,6 +7,6 @@ Rachel Badzioch: rbadzioc@nd.edu
 Nathan Kroeze: nkroeze@nd.edu
 
 
-Up to date file for our forecast with downwelling shortwave radiation as a driver: FutureModelv2.R
+Up to date file for our forecast with downwelling shortwave radiation as a driver: FutureModel_2driver.R
 
 Random walk forecast: FutureModel.R
