@@ -269,7 +269,7 @@ points(time,ci2[2,],pch="+",cex=0.5,col="red")
 
 ### submitting forecast
 
-team_name <- "PioNEErs"
+team_name <- "NDPioNEErs"
 team_list <- list(list(individualName = list(givenName = c("Rachel","Eva","Nate","Hayden") ,
                                              surName = c("Badzioch","Deegan","Kroeze","Gallo"),
                                              organizationName = "University of Notre Dame",
@@ -298,7 +298,7 @@ NEE_submit<- tibble(datetime = tail(dateseq, n = 35),
   model_metadata = list(
     forecast = list(
       model_description = list(
-        forecast_model_id =  "PioNEErs", ## current git SHA
+        forecast_model_id =  "ND_PioNEErs", 
         name = "NEE at UNDERC with SW and Phen", 
         type = "empirical",  
         repository = "https://github.com/edeegan2/NDbio4cast/tree/main/group1_model"   ## put your REPO here *******************
@@ -311,7 +311,7 @@ NEE_submit<- tibble(datetime = tail(dateseq, n = 35),
         complexity = 2, 
         propagation = list( 
           type = "ensemble", 
-          size = 31) 
+          size = 10000) 
       ),
       parameters = list(
         status = "present"
