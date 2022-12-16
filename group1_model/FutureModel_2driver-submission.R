@@ -309,6 +309,7 @@ forecast$site_id<-"UNDE"
 #add mu and sigma predictions
 forecast[1:35,8]<-mu
 forecast[36:70,8]<-sigma
+forecast<-as.tibble(forecast)
 
 #EFI file name standards
 # csv.gz means that it will be compressed
@@ -317,6 +318,46 @@ forecast_file <- paste0("terrestrial_daily","-",file_date,"-",model_id,".csv.gz"
 
 #Write csv to disk
 write_csv(forecast, forecast_file)
+
+# Generate metadata
+team_name <- "NDPioNEErs"
+team_list <- list(list(individualName = list(givenName = c("Rachel","Eva","Nate","Hayden") ,
+                                             surName = c("Badzioch","Deegan","Kroeze","Gallo"),
+                                             organizationName = "University of Notre Dame",
+                                             electronicMailAddress = "hgallo@nd.edu")))
+
+model_metadata = list(
+  forecast = list(
+    model_description = list(
+      forecast_model_id =  "ND_PioNEErs", 
+      name = "NEE at UNDERC with SW and Phenology", 
+      type = "empirical",  
+      repository = "https://github.com/edeegan2/NDbio4cast/tree/main/group1_model"   ## put your REPO here *******************
+    ),
+    initial_conditions = list(
+      status = "present"
+    ),
+    drivers = list(
+      status = "present",
+      complexity = 2
+    ),
+    parameters = list(
+      status = "data_driven"
+    ),
+    random_effects = list(
+      status = "absent"
+    ),
+    process_error = list(
+      status = "present"
+    ),
+    obs_error = list(
+      status = "present"
+    )
+  )
+)
+
+#metadata_file <- neon4cast::generate_metadata(forecast_file, team_list, model_metadata)
+##some group members having trouble with metadata, some not, we also submitted metadata using the online submission form so metadata should still be linked to our model id
 
 #Submit forecast!!!!!
 neon4cast::submit(forecast_file = forecast_file, metadata = NULL, ask = FALSE)
