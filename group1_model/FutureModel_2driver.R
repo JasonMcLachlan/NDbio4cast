@@ -266,3 +266,70 @@ ecoforecastR::ciEnvelope(time,ci2[1,],ci2[3,],col=ecoforecastR::col.alpha("light
 points(time,y,pch="+",cex=0.5)
 points(time,ci2[2,],pch="+",cex=0.5,col="red")
 
+
+### submitting forecast
+
+team_name <- "PioNEErs"
+team_list <- list(list(individualName = list(givenName = c("Rachel","Eva","Nate","Hayden") ,
+                                             surName = c("Badzioch","Deegan","Kroeze","Gallo"),
+                                             organizationName = "University of Notre Dame",
+                                             electronicMailAddress = "hgallo@nd.edu")))
+
+NEE_submit<- tibble(datetime = tail(dateseq, n = 35),
+              reference_datetime=forecast_date,
+              site_id = "UNDERC",
+              family = "ensemble",
+              parameter = 'mu',
+              predicted = tail(ci2[2,], n = 35),
+              variable = "NEE")
+
+  
+  #Forecast output file name in standards requires for Challenge.  
+  # csv.gz means that it will be compressed
+  forecast_file <- paste0("terrestrial_daily","-",forecast_date,"-",team_name,".csv.gz")
+  
+  #Write csv to disk
+  write_csv(NEE_submit, forecast_file)
+  
+  #Confirm that output file meets standard for Challenge
+  neon4cast::forecast_output_validator(forecast_file)
+  
+  # Generate metadata
+  model_metadata = list(
+    forecast = list(
+      model_description = list(
+        forecast_model_id =  "PioNEErs", ## current git SHA
+        name = "NEE at UNDERC with SW and Phen", 
+        type = "empirical",  
+        repository = "https://github.com/edeegan2/NDbio4cast/tree/main/group1_model"   ## put your REPO here *******************
+      ),
+      initial_conditions = list(
+        status = "present"
+      ),
+      drivers = list(
+        status = "propagates",
+        complexity = 2, 
+        propagation = list( 
+          type = "ensemble", 
+          size = 31) 
+      ),
+      parameters = list(
+        status = "present"
+      ),
+      random_effects = list(
+        status = "present"
+      ),
+      process_error = list(
+        status = "present"
+      ),
+      obs_error = list(
+        status = "present"
+      )
+    )
+  )
+  
+  metadata_file <- neon4cast::generate_metadata(forecast_file, team_list, model_metadata)
+  
+  neon4cast::submit(forecast_file = forecast_file, metadata = metadata_file, ask = FALSE)
+  
+
