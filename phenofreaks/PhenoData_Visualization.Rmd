@@ -1,0 +1,76 @@
+---
+title: "Visualize_Phenology"
+author: "Phenofreaks"
+date: "10/24/2022"
+output: html_document
+---
+
+
+## Install and load packages
+The packages bellow are necessary to visualize phenology data. Comment lines added to allow the document to knit. If you need the packages installed, uncomment the install.packages lines.
+```{r}
+#install.packages("readr")
+#install.packages("ggplot2")
+#install.packages("tidyr")
+#install.packageS("dplyr")
+
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+```
+
+## Read in site and phenology data
+Read in site data and most up to date phenology data quantified from phenocam data by the ecoforecasting initiative. We are only interested in deciduous broadleaf forests. This can be filtered in the site_data according to the pheno_cam vegetation type. The remaining sites can be used to filter the phenology data. 
+```{r}
+
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(phenology == 1, phenocam_vegetation == "deciduous broadleaf")
+head(site_data)
+
+NeonPheno =readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/phenology/phenology-targets.csv.gz", guess_max = 1e6) |> 
+  na.omit()
+head(NeonPheno)
+```
+
+## Manipulate phenology data.
+1) Remove sites that are not deciduous broadleaf (sites not present in the site_data).
+2) Add season column to group data based on spring green up or fall color change and leaf drop
+
+```{r}
+Pheno_decid = NeonPheno %>% #Filter sites accord to deciduous broadleaf
+  filter(site_id %in% unique(site_data$field_site_id)) 
+
+Pheno_seasons = Pheno_decid %>% #Add season variable
+  mutate(season = case_when(lubridate::month(datetime) <= 6 ~ "spring",
+                            lubridate::month(datetime) >= 7 ~ "fall")) 
+```
+
+## Visualize data
+Use ggplot to visualize rcc and gcc data during spring green up and fall color change and leaf drop. Can plot across years or choose a single year
+
+```{r, fig.width=10,fig.height=11}
+
+
+Pheno_seasons %>% 
+  filter(lubridate::year(datetime)== 2021) %>% #choosing 2021
+  filter(season == "spring") %>% #spring
+  filter(variable == "gcc_90") %>% #only interested in greeness 
+  ggplot(aes(x=datetime,y=observation)) +
+  geom_point(color="#228b22",size=0.75) + 
+  theme_classic() + 
+  labs(title="Spring phenology", x = "Date", y= "gcc_90") +
+  facet_wrap(~site_id,ncol=5) + 
+  theme(strip.background=element_blank(),panel.spacing=unit(1,"lines"))
+
+Pheno_seasons %>% 
+  filter(lubridate::year(datetime)== 2021) %>% #2021 YEAR
+  filter(season == "fall") %>% # Fall
+  ggplot(aes(x=datetime,y=observation,shape=variable)) + #Plot greeness and redness
+  geom_point(aes(color=variable),size=0.75) + 
+  scale_color_manual(values = c("#daa520","#228b22")) + 
+  theme_classic() + 
+  facet_wrap(~site_id,ncol=5) +
+  labs(title="Fall phenology", x = "Date", y= "Reflectance value",color="Reflectance index",shape="Reflectance index") + 
+  theme(strip.background=element_blank(),panel.spacing = unit(1,"lines"))
+```
