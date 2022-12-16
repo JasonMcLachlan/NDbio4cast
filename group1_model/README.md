@@ -5,3 +5,8 @@ Eva Deegan: edeegan2@nd.edu
 Hayden Gallo: hgallo@nd.edu 
 Rachel Badzioch: rbadzioc@nd.edu 
 Nathan Kroeze: nkroeze@nd.edu
+
+
+Up to date file for our forecast with downwelling shortwave radiation as a driver: FutureModelv2.R
+
+Random walk forecast: FutureModel.R
