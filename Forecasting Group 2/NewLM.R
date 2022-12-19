@@ -1,3 +1,4 @@
+#From original linear model
 library(tidyverse)
 library(neon4cast)
 library(lubridate)
@@ -7,6 +8,11 @@ library(rjags)
 library(rnoaa)
 library(daymetr)
 library(padr)
+
+
+##### RUN THIS FIRST #########
+
+
 #devtools::install_github("EcoForecast/ecoforecastR",force=TRUE)
 #load target data
 target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquatics/aquatics-targets.csv.gz") |>
@@ -14,6 +20,9 @@ target <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/aquati
 
 #subset to BARC (Barco Lake in Florida)
 target_barc <- subset(target, site_id == "BARC")
+
+
+
 
 #past NOAA data
 sites <- unique(target_barc$site_id)
@@ -27,35 +36,50 @@ noaa_past <- df_past |>
 noaa_past_mean <- noaa_past |> 
   mutate(date = as_date(datetime)) |> 
   group_by(date, site_id) |> 
-  summarize(air_temperature = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
+  dplyr::summarize(air_temperature = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
   rename(datetime = date) |> 
   mutate(air_temperature = air_temperature - 273.15)
 
 
-forecast_date <- Sys.Date()#assign the nee forecast date as today (the date on the computer)
-noaa_date <- Sys.Date() - lubridate::days(1)#assign weather forecast date as yesterday (todays is not available yet)  
+noaa_date <- Sys.Date() - lubridate::days(1)
 
 
-df_future <- neon4cast::noaa_stage2()
-noaa_future <- df_future |> 
-  dplyr::filter(start_date == as.character(noaa_date),
-                variable == "air_temperature") |> 
-  dplyr::rename(ensemble = parameter) |> 
-  dplyr::collect()
+#New Way of Accessing Forecasted Temperature Data
+noaa_mean_forecast <- function(site, var, reference_date) {
+  endpoint = "data.ecoforecast.org"
+  bucket <- glue::glue("neon4cast-drivers/noaa/gefs-v12/stage1/0/{reference_date}")
+  s3 <- arrow::s3_bucket(bucket, endpoint_override = endpoint, anonymous = TRUE)
+  
+  # stage1 air temp is Celsius
+  arrow::open_dataset(s3) |>
+    dplyr::filter(site_id == site,
+                  datetime >= lubridate::as_datetime(noaa_date),
+                  variable == var) |>
+    dplyr::select(datetime, prediction, parameter) |>
+    dplyr::mutate(datetime = as_date(datetime)) |>
+    dplyr::group_by(datetime, parameter) |>
+    dplyr::summarize(air_temperature = mean(prediction), .groups = "drop") |>
+    dplyr::select(datetime, air_temperature, parameter) |>
+    dplyr::rename(ensemble = parameter) |>
+    dplyr::collect()
+  
+}
 
-target <- target_barc |> 
+noaa_future <- noaa_mean_forecast("BARC", "TMP", noaa_date)
+
+target_barc <- target_barc |> 
   select(datetime, site_id, variable, observation) |> 
   filter(variable %in% c("temperature", "oxygen")) |> 
   pivot_wider(names_from = "variable", values_from = "observation")
 
-target <- left_join(target, noaa_past_mean, by = c("datetime","site_id"))
+target <- left_join(target_barc, noaa_past_mean, by = c("datetime","site_id"))
 
 sites <- unique(target$site_id)
 #subset_site_data <- site_target[917:nrow(site_target),]
 
 
-temp_forecast <- NULL
 
+temp_forecast <- NULL
 for(i in 1:length(sites)){ 
   i = 1
   
@@ -64,8 +88,6 @@ for(i in 1:length(sites)){
   
   site_target <- site_target[!is.na(site_target$air_temperature),]
   
-  noaa_future_site <- noaa_future |> 
-    filter(site_id == sites[i])
   
   #if(length(which(!is.na(site_target$air_temperature) & !is.na(site_target$temperature))) > 0){ #just an optional check if you're running it in a workflow
   
@@ -73,26 +95,21 @@ for(i in 1:length(sites)){
   
   fit <- lm(temperature ~ air_temperature, data = site_target)
   
-  noaa_subset <- subset(noaa_future_site, variable = "air_temperature")
+  noaa_subset <- subset(noaa_future, variable = "air_temperature")
   colnames(noaa_subset) <- c("site_id", "air_temperature", "variable", "height", "horizon", "ensemble", "reference_datetime", "forecast_valid", "datetime", "longitude", "latitude", "family", "start_date")
-  noaa_subset[,2] = noaa_subset[,2] - 273
+  noaa_subset[,2] = noaa_subset[,2] 
   
   #use linear regression to forecast water temperature for each ensemble member
-  forecasted_water_temperature <- fit$coefficients[1] + fit$coefficients[2] * noaa_subset$air_temperature
-  
+  init_forecast <- fit$coefficients[1] + fit$coefficients[2] * noaa_subset$air_temperature
   
   
   
   #Build site level dataframe.  Note we are not forecasting chla
-  temp_forecast <- cbind(noaa_subset, forecasted_water_temperature)
+  temp_forecast <- cbind(noaa_subset, init_forecast)
   #}
 }
-temp_forecast <- subset(temp_forecast, select = -c(site_id, variable, height, horizon, ensemble, reference_datetime, forecast_valid, longitude, latitude, family, start_date))
-temp_forecast <- separate(temp_forecast, datetime, into = c("date", "time"), sep = " (?=[^ ]+$)")
-temp_forecast$date <- as.Date(temp_forecast$date)
 
-temp_forecast <- aggregate(forecasted_water_temperature ~ date, temp_forecast, mean)
+non_ensemble_forecast <- temp_forecast[temp_forecast$variable == 1,]
+temp_forecast <- subset(non_ensemble_forecast, select = -c(air_temperature, variable))
 colnames(temp_forecast) <- c("datetime", "observation")
-
-
 

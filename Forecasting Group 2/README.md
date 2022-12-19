@@ -17,3 +17,9 @@ psharma2@nd.edu
 Chathuranga Senevirathne
 csenevirathne@nd.edu 
 419-378-1800
+
+Order of Files to Run to Replicate Forecast:
+
+1. Run NewLM.R to generate a forecast of water temperature
+2. Run FirstForecast.R to generate a forecast, with plot of historical and future data, and optional hindacst
+3. Run ForecastWorkflow.R to alter forecast to proper form for submission to the EFI Forecasting Challenge
