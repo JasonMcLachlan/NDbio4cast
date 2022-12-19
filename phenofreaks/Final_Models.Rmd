@@ -1,0 +1,1549 @@
+---
+title: "RandomWalk_Driver_SiteRandomEffect_Model"
+author: "Phenofreaks"
+date: "11/9/2022"
+output: html_document
+---
+
+##    Step 0: 
+##    Define team name and team members
+##    Create functions used in the script
+##    Load necessary packages
+
+```{r}
+ 
+team_info <- list(team_name = "Phenofreaks",
+                  team_list = list(list(individualName = list(givenName = c("Logan",
+                                                                            "Cazimir",
+                                                                            "Keo",
+                                                                            "Miriam"),
+                                                              surName = c("Monks",
+                                                                          "Kowalski",
+                                                                          "Pangan",
+                                                                          "Grady")),
+                                        organizationName = "University of Notre Dame",
+                                        electronicMailAddress = c("lmonks@nd.edu",
+                                                                  "ckowals4@nd.edu",
+                                                                  "mgrady7@nd.edu"))))
+```
+
+## Download phenocam data function: Originally from the Ecological Forecasting Initiative
+
+```{r}
+##' Download Phenocam data
+##'
+##' @param URL  web address where data is archived
+##' @param skipNum The number of lines to skip (22 for 1day file and 17 for roistats file)
+##' @export
+download.phenocam <- function(URL,skipNum=22) {
+  ## check that we've been passed a URL
+  if (length(URL) == 1 & is.character(URL) & substr(URL,1,4)=="http") {
+    
+    ## read data
+    dat <- read.csv(URL,skip = skipNum)
+    
+    ## convert date
+    dat$date <- as.Date(as.character(dat$date))
+    
+    return(dat)
+  } else {
+    print(paste("download.phenocam: Input URL not provided correctly",URL))
+  }
+}
+```
+
+
+## Function to calculate phenocam uncertainty: originally from the Ecological Forecasting Initiative
+```{r}
+calculate.phenocam.uncertainty <- function(dat,dates,target="gcc") {
+  sds <- rep(NA,length(dates))
+  nboot <- 50
+  dat$date = dat$datetime
+
+  for(d in 1:length(dates)){
+    dailyDat <- dat[dat$date==dates[d],]
+    if(nrow(dailyDat)>0){
+      dailyDat <- dailyDat[!is.na(dailyDat[,target]),]
+      nrows <- nrow(dailyDat)
+      gcc_90s <- rep(NA,nboot)
+      for(j in 1:nboot){
+        gcc_vec  = pull(dailyDat[,target])
+        gcc_90s[j] <- quantile(gcc_vec[sample(x = 1:nrows,size = nrows,replace = T)],0.90)
+      }  
+      sds[d] <- sd(gcc_90s)
+    }else{
+      sds[d] <- NA
+    }
+  }
+  return(sds)
+}
+
+```
+
+## Load packages
+```{r}
+library(rjags)
+library(dplyr)
+library(tidyr)
+library(tidybayes)
+library(ggplot2)
+```
+
+##    Step 1: 
+##    Download NEON site meta data, and Neon Phenocam data
+##    Manipulate data into formatting appropriate for model fitting and forecasting
+Read in site data and most up to date phenology data quantified from phenocam data by the ecoforecasting initiative. We are only interested in deciduous broadleaf forests. This can be filtered in the site_data according to the pheno_cam vegetation type. The remaining sites can be used to filter the phenology data. 
+
+```{r}
+
+
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(phenology == 1, phenocam_vegetation == "deciduous broadleaf")
+
+
+NeonPheno =readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/phenology/phenology-targets.csv.gz", guess_max = 1e6) |> 
+  na.omit()
+
+
+df_past <- neon4cast::noaa_stage3()
+df_future <- neon4cast::noaa_stage2(cycle = 0)
+```
+
+## Manipulate phenology data.
+1) Remove sites that are not deciduous broadleaf (sites not present in the site_data).
+2) Add season column to group data based on spring green up or fall color change and leaf drop
+
+```{r}
+Pheno_decid = NeonPheno %>% #Filter sites accord to deciduous broadleaf
+  filter(site_id %in% unique(site_data$field_site_id))
+
+Pheno_seasons = Pheno_decid %>% #Add season variable
+  mutate(season = case_when(lubridate::month(datetime) <= 6 ~ "spring",
+                            lubridate::month(datetime) >= 7 ~ "fall")) 
+
+
+```
+
+```{r}
+past_drivers <- df_past |> 
+  dplyr::filter(site_id %in% unique(Pheno_decid$site_id),
+                variable %in%  c("precipitation_flux", 
+                                 "air_temperature",
+                                 "surface_downwelling_shortwave_flux_in_air")
+  ) |> 
+  dplyr::rename(ensemble = parameter) |>
+  dplyr::collect()
+
+past_drivers_ensembles <- past_drivers %>% 
+  mutate(date = as.Date(datetime)) %>% 
+  group_by(date,variable,site_id,ensemble) %>% 
+  summarize(driver_value = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
+  rename(datetime = date)
+
+past_drivers_mean <- past_drivers %>% 
+  mutate(date = as.Date(datetime)) %>% 
+  group_by(date,variable,site_id) %>% 
+  summarize(driver_value = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
+  rename(datetime = date)
+
+
+rm(df_past)
+
+forecast_date = Sys.Date()
+noaa_date = Sys.Date() - lubridate::days(1)
+
+future_drivers <- df_future |> 
+  dplyr::filter(site_id %in% unique(Pheno_decid$site_id),
+                reference_datetime == as.Date(noaa_date),
+                datetime >= lubridate::as_datetime(forecast_date),
+                variable %in%  c("precipitation_flux", 
+                                 "air_temperature",
+                                 "surface_downwelling_shortwave_flux_in_air") 
+  ) |>
+  dplyr::rename(ensemble = parameter) %>%
+  dplyr::select(datetime, prediction, ensemble, variable, site_id) |>
+  dplyr::collect()
+
+future_drivers_ensembles <- future_drivers %>% 
+  mutate(date = as.Date(datetime)) %>% 
+  group_by(date,variable,site_id,ensemble) %>% 
+  summarize(driver_value = mean(prediction, na.rm = TRUE), .groups = "drop") %>% 
+  rename(datetime = date)
+
+
+save(past_drivers,past_drivers_ensembles, past_drivers_mean,future_drivers,future_drivers_ensembles, file ="all.sites.drivers.unformatted.RData")
+```
+
+```{r}
+#load("all.sites.drivers.unformatted.RData")
+#rm(past_drivers)
+#rm(future_drivers)
+
+past_air_temp_ensembles = past_drivers_ensembles %>% 
+  filter(variable == "air_temperature")
+past_precip_ensembles = past_drivers_ensembles %>% 
+  filter(variable == "precipitation_flux")
+past_sunlight_ensembles = past_drivers_ensembles %>%
+  filter(variable == "surface_downwelling_shortwave_flux_in_air")
+
+
+```
+
+
+## Calculate gcc and rcc uncertainty
+Use the function defined above to find the standard deviation in gcc and rcc uncertainty. 
+
+```{r}
+Pheno_Wide = Pheno_seasons %>% pivot_wider(names_from="variable",values_from="observation")
+
+gcc.uncert =calculate.phenocam.uncertainty(dat=Pheno_Wide,
+                               dates=unique(lubridate::as_date(Pheno_Wide$datetime)),
+                               target="gcc_90")
+rcc.uncert = calculate.phenocam.uncertainty(dat=Pheno_Wide,
+                                          dates=unique(lubridate::as_date(Pheno_Wide$datetime)),
+                                          target="rcc_90")
+uncert.df = data.frame(datetime=unique(lubridate::as_date(Pheno_Wide$datetime)),
+                      gcc_sd = gcc.uncert,
+                      rcc_sd = rcc.uncert)
+Pheno_Wide$datetime = lubridate::as_date(Pheno_Wide$datetime)
+Pheno.long = Pheno_Wide %>% pivot_longer(cols=c("gcc_90","rcc_90"),
+                            names_to = c("variable"),
+                            values_to="observed")
+Pheno.uncert.long = uncert.df %>% pivot_longer(cols=c("gcc_sd","rcc_sd"),
+                                               names_to="variable",
+                                               values_to = "sd")
+Pheno.long$variable = gsub("_90","",Pheno.long$variable)
+Pheno.uncert.long$variable = gsub("_sd","",Pheno.uncert.long$variable)
+Pheno.uncert = merge(x=Pheno.long,y=Pheno.uncert.long,by=c("datetime","variable"))
+
+rm(Pheno.long,Pheno.uncert.long,Pheno_seasons,Pheno_decid,uncert.df,gcc.uncert,rcc.uncert)
+
+```
+
+## Visualize data
+Use ggplot to visualize rcc and gcc data during spring green up and fall color change and leaf drop. Can plot across years or choose a single year
+
+```{r, fig.width=10,fig.height=11}
+
+study_sites = c("HARV","SERC","UNDE","GRSM")
+
+Pheno_Wide %>% 
+  filter(lubridate::year(datetime) >= 2020) %>% #2021 YEAR
+  filter(site_id %in% study_sites) %>% 
+  ggplot(aes(x=datetime,y=gcc_90)) +
+  geom_point(color="#228b22",size=2) + 
+  theme_bw() + 
+  labs(title="Spring phenology", x = "Date", y= "gcc_90") +
+  facet_wrap(~site_id,ncol=2) + 
+  theme(strip.background=element_blank(),panel.spacing=unit(1,"lines"))
+
+past_air_temp_ensembles %>%
+  filter(site_id %in% study_sites,
+         ensemble <= 10,
+         lubridate::year(datetime) >= 2020) %>% 
+  ggplot(aes(x=datetime,y=driver_value-273.15,group = as.factor(ensemble), colour=as.factor(ensemble)))+
+  geom_line()+
+  facet_wrap(~site_id)
+
+past_precip_ensembles %>%
+  filter(site_id %in% study_sites,
+         ensemble <= 10,
+         lubridate::year(datetime) >= 2020) %>% 
+  ggplot(aes(x=datetime,y=driver_value,group = as.factor(ensemble), colour=as.factor(ensemble)))+
+  geom_line() + 
+  facet_wrap(~site_id)
+
+past_sunlight_ensembles %>%
+  filter(site_id %in% study_sites,
+         ensemble <= 10,
+         lubridate::year(datetime) >= 2020) %>% 
+  ggplot(aes(x=datetime,y=driver_value,group = as.factor(ensemble), colour=as.factor(ensemble)))+
+  geom_line()+
+  facet_wrap(~site_id)
+
+rm(past_sunlight_ensembles,past_drivers_ensembles,past_air_temp_ensembles,past_precip_ensembles)
+
+```
+
+##    Step 2:
+##    Calibrate forecasts using bayesian models in Rjags
+##    4 models will be present: 
+##    1) Random walk model on one site
+##    2) Random walk model on 4 sites with site level random effect
+##    3) Random walk model on 4 sites with site level random effect and drivers
+##    4) 
+
+
+## Model 1: Define a random walk model that would work on one Neon site
+```{r}
+RandomWalk = "
+model{
+  # Priors
+  x[1] ~ dnorm(x_ic,tau_add)
+  tau_obs[1] <- 1 / pow(sd_obs[1], 2)
+  y[1] ~ dnorm(x[1],tau_obs[1])
+  
+  sd_add  ~ dunif(0.000001, 100)
+  tau_add <- 1/ pow(sd_add, 2)
+  
+  # Model
+  for(t in 2:N){
+    # Process model
+    x[t] ~ dnorm(x[t-1], tau_add)
+    # Observation precision
+    tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+    # Data model
+    y[t] ~ dnorm(x[t], tau_obs[t])
+  }
+}
+"
+```
+
+
+## Model 1: Random walk for each site individually rather than together
+
+```{r}
+## New pheno data frame 
+phenoDat = Pheno.uncert
+
+## Set sites that will be modeled and used in for loop
+sites <- study_sites
+
+## Set target variables of interest
+target_variables <- c("gcc")
+
+## Set forecast length to 35 days
+forecast_length <- 35
+
+## Create an array filled with NAs for predictions
+predictions <- array(NA, dim = c(length(target_variables), forecast_length, length(sites), 2000))
+
+## Create a place to store saved forecast data
+forecast_saved_ensemble <- NULL
+
+## Team name
+team_name = "Phenofreaks"
+
+## Loop through target variables - i.e. model both rcc and gcc
+for(i in 1:length(target_variables)){
+  
+  ## Loop through sites of interest - i.e. model each NEON site individually
+  for(s in 1:length(sites)){
+    
+    message(paste0("forecasting ",target_variables[i]," at site: ",sites[s]))
+    message("site ", s, " of ", length(sites))
+    
+    ## Get the data for specific site s in the loop 
+    sitePhenoDat <- phenoDat[phenoDat$site_id==sites[s],]
+    
+    ## Set the time as a date
+    sitePhenoDat$time <- lubridate::as_date(sitePhenoDat$datetime)
+
+    # Our forecast start date
+    start_forecast <- Sys.Date() + lubridate::days(1)
+     
+    ################################################## 
+    ## change 1 to i in order to forecast gcc and rcc.  
+    sitePhenoDat_variable <- sitePhenoDat %>% 
+      filter(variable == target_variables[1])
+    #sitePhenoDat_sd <- sitePhenoDat %>% 
+    #  filter(variable == target_variables_sd[1])
+    
+    full_time <- tibble::tibble(time = seq(min(sitePhenoDat$time), Sys.Date()  + lubridate::days(forecast_length), by = "1 day"))
+    
+    
+    forecast_start_index <- which(full_time$time == max(sitePhenoDat$time) + lubridate::days(1))
+    
+    
+    ## Create a tibble, 
+    d <- tibble::tibble(time = sitePhenoDat_variable$time,
+                        p=as.numeric(sitePhenoDat_variable$observed),
+                        p.sd=as.numeric(sitePhenoDat_variable$sd))
+    
+    d <- dplyr::full_join(d, full_time)
+    ggplot(d, aes(x = time, y = p)) +
+      geom_point()
+    
+    
+    #gap fill the missing precisions by assigning them the average sd for the site
+    d$p.sd[!is.finite(d$p.sd)] <- NA
+    d$p.sd[is.na(d$p.sd)] <- mean(d$p.sd,na.rm=TRUE)
+    d$p.sd[d$p.sd == 0.0] <- min(d$p.sd[d$p.sd != 0.0])
+    d$N <- length(d$p)
+    data <- list(y = d$p,
+                 sd_obs = d$p.sd,
+                 N = length(d$p),
+                 x_ic = 0.3)
+    which(is.na(data$y))
+    init_x <- approx(x = d$time[!is.na(d$p)], 
+                     y = d$p[!is.na(d$p)], 
+                     xout = d$time, rule = 2)$y
+    init_x
+    #Initialize parameters
+    nchain = 3
+    chain_seeds <- c(200,800,1400)
+    init <- list()
+    diff(data$y[!is.na(data$y)])
+    diff
+    for(j in 1:nchain){
+      init[[j]] <- list(sd_add = sd(diff(data$y[!is.na(data$y)])),
+                        .RNG.name = "base::Wichmann-Hill",
+                        .RNG.seed = chain_seeds[j],
+                        x = init_x)
+    }
+    
+    
+    
+    j.model   <- jags.model(file = textConnection(RandomWalk),
+                            data = data,
+                            inits = init,
+                            n.chains = 3)
+    
+    
+    #Run JAGS model as the burn-in
+    jags.out   <- coda.samples(model = j.model, variable.names = c("sd_add"), n.iter = 1000)
+    
+    #Run JAGS model again and sample from the posteriors
+    m   <- coda.samples(model = j.model,
+                        variable.names = c("x","sd_add", "y"),
+                        n.iter = 2000,
+                        thin = 1)
+    
+    #Use TidyBayes package to clean up the JAGS output
+    model_output <- m %>%
+      spread_draws(x[day],y[day]) %>%
+      filter(.chain == 1) %>%
+      rename(ensemble = .iteration) %>%
+      mutate(time = full_time$time[day]) %>%
+      ungroup() %>%
+      select(time, x, y, ensemble)
+
+      #if(generate_plots){
+      #Pull in the observed data for plotting
+      obs <- tibble(time = d$time,
+                    obs = d$p) %>% 
+        filter(time >= max(sitePhenoDat$time))
+      
+        
+        ## Get credible intervals and predictions for x and y 
+        mod.out = model_output %>%
+        group_by(time) %>%
+        summarise(mean.x = mean(x),
+                  mean.y = mean(y),
+                  upper.x = quantile(x, 0.975),
+                  upper.y = quantile(y, 0.975),
+                  lower.x = quantile(x, 0.025),
+                  lower.y = quantile(y, 0.025),.groups = "drop") #%>%
+        #filter(time >= max(sitePhenoDat$time) )
+        ggplot(data=mod.out,aes(x = time, y = mean.x)) +
+        #geom_point(shape=1) + 
+        geom_point(aes(x=time,y=mean.y),color="red",shape=3) +
+        geom_ribbon(aes(ymin = lower.x, ymax = upper.x), 
+                    alpha = 0.2, color = "lightblue", 
+                    fill = "lightblue") +
+        geom_point(data = obs, aes(x = time, y = obs), color = "purple",shape=8) +
+        labs(x = "Date", y = "gcc_90") +
+        theme_bw()
+      
+      #Post past and future
+      ggsave(paste0("phenology_",sites[s],"_figure.pdf"), device = "pdf")
+    }
+    
+    #Filter only the forecasted dates and add columns for required variable
+    forecast_saved_tmp <- model_output %>%
+      filter(time >= start_forecast) %>%
+      rename(predicted = y) %>%
+      mutate(site_id = sites[s]) %>%
+      mutate(forecast_iteration_id = start_forecast) %>%
+      mutate(forecast_project_id = team_name,
+             variable =  target_variables[i])
+    
+  
+    # Combined with the previous sites
+    forecast_saved_ensemble <- rbind(forecast_saved_ensemble, forecast_saved_tmp)
+    
+}
+```
+
+
+## Model 2: Define a random walk model that has random site effects
+```{r}
+RandomWalk.SiteRandomEffect = "model{
+  
+  #### Priors
+  
+  # Observation precision
+  tau_obs[1] <- 1 / pow(sd_obs[1], 2)
+  
+  # Process precision
+  sd_add  ~ dunif(0.000001, 100)
+  tau_add <- 1/ pow(sd_add, 2)
+  
+  # Site random effect precision
+  sd_site ~ dunif(0.000001, 100)
+  tau_site <- 1/ pow(sd_site, 2)
+  
+  #### Loop over all sites
+  #### X, Y, and Observation precision priors
+  #### Nested for loop for data and process models
+  #### Site random effect
+  for (s in 1:ns){
+    
+    #### X, Y, and observation priors
+    x[1,s] ~ dnorm(x_ic,tau_add)
+    y[1,s] ~ dnorm(x[1,s],tau_obs[1])
+    
+  
+    #### Loop over all times: 
+    #### 1) Data model 
+    #### 2) Process model
+    #### 3) Observation precision 
+    #### s = site, t = time
+    for(t in 2:n){
+      
+      #### 1) Data model 
+      y[t,s] ~ dnorm(x[t,s],tau_obs[t])
+      
+      #### 2) Process model
+      P.new[t,s] = x[t-1,s] + site[s]
+      x[t,s] ~ dnorm(P.new[t,s],tau_add)
+      
+      #### 3) Observation precision
+      #tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+
+    }
+  
+  ## Site random effects
+  site[s] ~ dnorm(0,tau_site)
+  
+  }
+  
+  for (t in 2:n){
+    ## Observation precision
+    tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+
+  }
+}"
+
+```
+
+## Model 3: Define a random walk model with site random effects model and drivers
+```{r}
+RandomWalk.Driver.SiteRandomEffect = "model{
+  
+  #### Priors
+  
+  # Observation precision
+  tau_obs[1] <- 1 / pow(sd_obs[1], 2)
+  
+  # Process precision
+  sd_add ~ dunif(0.000001, 100)
+  tau_add <- 1/ pow(sd_add, 2)
+  
+  # Site random effect precision
+  sd_site ~ dunif(0.000001, 100)
+  tau_site <- 1/ pow(sd_site, 2)
+  
+  # Parameters
+  #betaX ~ dnorm(0,0.5)
+  betaDriver ~ dnorm(0,0.5)
+  
+  #### Loop over all sites
+  #### X, Y, and Observation precision priors
+  #### Nested for loop for data and process models
+  #### Site random effect
+  for (s in 1:ns){
+    
+    #### X, Y, and observation priors
+    x[1,s] ~ dnorm(x_ic,tau_add)
+    y[1,s] ~ dnorm(x[1,s],tau_obs[1])
+    
+  
+    #### Loop over all times: 
+    #### 1) Data model 
+    #### 2) Process model
+    #### 3) Observation precision 
+    #### s = site, t = time
+    for(t in 2:n){
+      
+      #### 1) Data model 
+      y[t,s] ~ dnorm(x[t,s],tau_obs[t])
+      
+      #### 2) Process model
+      #P.new[t,s] = x[t-1,s] + site[s]
+      #x[t,s] ~ dnorm(P.new[t,s],tau_add)
+      
+      mu[t,s] <- x[t-1,s] + betaDriver*Driver[t,s] + site[s]
+      x[t,s] ~ dnorm(mu[t,s],tau_add)
+      
+      #### 3) Observation precision
+      #tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+
+    }
+  
+  ## Site random effects
+  site[s] ~ dnorm(0,tau_site)
+  
+  }
+  
+  for (t in 2:n){
+    ## Observation precision
+    tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+
+  }
+}"
+
+
+```
+
+## Define a model with environmental drivers and site random effect
+```{r}
+Driver.SiteRandomEffect = "model{
+  
+  #### Priors
+  
+  # Observation precision
+  tau_obs[1] <- 1 / pow(sd_obs[1], 2)
+  
+  # Process precision
+  sd_add  ~ dunif(0.000001, 100)
+  tau_add <- 1/ pow(sd_add, 2)
+  
+  # Site random effect precision
+  sd_site ~ dunif(0.000001, 100)
+  tau_site <- 1/ pow(sd_site, 2)
+  
+  # Parameters
+  #betaX ~ dnorm(0,0.5)
+  betaDriver ~ dnorm(0,0.5)
+  
+  #### Loop over all sites
+  #### X, Y, and Observation precision priors
+  #### Nested for loop for data and process models
+  #### Site random effect
+  for (s in 1:ns){
+    
+    #### X, Y, and observation priors
+    x[1,s] ~ dnorm(x_ic,tau_add)
+    y[1,s] ~ dnorm(x[1,s],tau_obs[1])
+    
+  
+    #### Loop over all times: 
+    #### 1) Data model 
+    #### 2) Process model
+    #### 3) Observation precision 
+    #### s = site, t = time
+    for(t in 2:n){
+      
+      #### 1) Data model 
+      y[t,s] ~ dnorm(x[t,s],tau_obs[t])
+      
+      #### 2) Process model
+      #P.new[t,s] = x[t-1,s] + site[s]
+      #x[t,s] ~ dnorm(mu[t,s],tau_add)
+      
+      mu[t,s] <- betaDriver*Driver[t,s] + site[s]
+      x[t,s] ~ dnorm(mu[t,s],tau_add)
+      
+      #### 3) Observation precision
+      #tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+
+    }
+  
+  ## Site random effects
+  site[s] ~ dnorm(0,tau_site)
+  
+  }
+  
+  for (t in 2:n){
+    ## Observation precision
+    tau_obs[t] <- 1 / pow(sd_obs[t], 2)
+
+  }
+}"
+```
+
+## Preparing data for use in multi site models with site level random effects
+These models need to have site x time matrices for each variable that differs by site and time. This includes observation measurements for gcc and rcc as well as each of the individual driver variables. Observation error data frame needs prepared as well, but will not have a site x time matrix. 
+
+```{r}
+
+past_temp = past_drivers_mean %>% 
+  filter(site_id %in% study_sites,
+         variable == "air_temperature") %>%
+  group_by(datetime,site_id) %>%
+  summarise(temperature = mean(driver_value)-273.15,.groups="drop") %>%
+  rename(time=datetime) %>%
+  select(time,temperature,site_id) %>%
+  pivot_wider(names_from = "site_id",values_from="temperature") %>%
+  collect()
+
+past_precip = past_drivers_mean %>% 
+  filter(site_id %in% study_sites,
+         variable == "precipitation_flux") %>%
+  group_by(datetime,site_id) %>%
+  summarise(precipitation = mean(driver_value),.groups="drop") %>%
+  rename(time=datetime) %>%
+  select(time,precipitation,site_id) %>%
+  pivot_wider(names_from = "site_id",values_from="precipitation") %>%
+  collect()
+
+past_sunlight = past_drivers_mean %>% 
+  filter(site_id %in% study_sites,
+         variable == "surface_downwelling_shortwave_flux_in_air") %>%
+  group_by(datetime,site_id) %>%
+  summarise(sunlight = mean(driver_value),.groups="drop") %>%
+  rename(time=datetime) %>%
+  select(time,sunlight,site_id) %>%
+  pivot_wider(names_from = "site_id",values_from="sunlight") %>%
+  collect()
+
+## New pheno data frame 
+phenoDat = Pheno.uncert
+
+## Run just gcc for now on SERC, HARV, UNDE, GRSM
+phenoDat= phenoDat %>% filter(variable=="gcc")
+phenoDat = phenoDat %>% filter(site_id %in% study_sites) #study sites variable from above
+
+## Set time as a date variable
+phenoDat$time <- lubridate::as_date(phenoDat$datetime)
+
+## Forecast length
+forecast_length = 35
+
+## Get full time record (earliest Phenocam record to last date of forecast)
+time_hist <- tibble::tibble(time = seq(min(phenoDat$time), 
+                                       Sys.Date() + lubridate::days(forecast_length), 
+                                       by = "1 day"))
+
+## Create a tibble with time, observed data, and observation error
+pheno.tib <- tibble::tibble(time = phenoDat$time,
+                        p=as.numeric(phenoDat$observed),
+                        p.sd=as.numeric(phenoDat$sd),
+                        site=phenoDat$site_id)
+
+## Join with full time record to run the model across all dates 
+pheno.tib <- dplyr::full_join(pheno.tib, time_hist)
+
+## Get a wide format dataframe for sites x time
+## Create observation dataframe 
+pheno.obs = pheno.tib[,-3]
+
+## Make wide table format
+p.obs.wide = pheno.obs %>% pivot_wider(names_from = "site",values_from ="p")
+
+## Time ordered dataframe
+p.obs.wide = p.obs.wide[order(p.obs.wide$time),]
+
+## Merge pheno and driver data to match up timing (driver data doesnt begin until september 2020 for some reason)
+p.driver.wide = merge(p.obs.wide,past_sunlight,by="time")
+p.driver.wide = merge(p.driver.wide,past_temp,by="time")
+p.driver.wide = merge(p.driver.wide,past_precip,by="time")
+colnames(p.driver.wide) = c("time","SERC_p","HARV_p","UNDE_p","GRSM_p","NA","SERC_light","HARV_light","UNDE_light","GRSM_light",
+                            "SERC_temp","HARV_temp","UNDE_temp","GRSM_temp","SERC_precip","HARV_precip","UNDE_precip","GRSM_precip")
+
+#### Manipulate phenocam observation error data
+## Fill in missing observation error data
+## Create observation error dataframe
+pheno.sd = pheno.tib[,-2]
+
+## Fill non finite values as NA, fill NAs as mean, and fill 0s as min
+pheno.sd$p.sd[!is.finite(pheno.sd$p.sd)] <- NA
+pheno.sd$p.sd[is.na(pheno.sd$p.sd)] <- mean(pheno.sd$p.sd,na.rm=TRUE)
+pheno.sd$p.sd[pheno.sd$p.sd == 0.0] <- min(pheno.sd$p.sd[pheno.sd$p.sd != 0.0])
+
+## Time ordered dataframe
+pheno.sd = pheno.sd[order(pheno.sd$time),]
+
+## Remove duplicates, all times have same sd
+pheno.p.sd = pheno.sd[!duplicated(pheno.sd$time),]
+
+## Merge with time to get apporpiate dates
+p.driver.sd = merge(pheno.p.sd,past_sunlight,by="time")
+
+## Just time and observation error
+p.driver.sd = p.driver.sd[,1:2]
+
+save(p.driver.wide,p.driver.sd,file="Past_Data.RData")
+```
+
+
+## Jags model run for model 2: Model with random walk and site level random effects, 
+```{r}
+## Create data list
+data = list(y=as.matrix(p.driver.wide[,2:5]),
+            sd_obs = p.driver.sd$p.sd,
+            n = nrow(p.driver.wide),
+            ns = ncol(p.driver.wide[,2:5]),
+            x_ic = 0.3)
+            #sd_site = 0.5)
+
+## Set chain number and seeds
+nchain = 3
+chain_seeds <- c(200,800,1400)
+
+## Set initial conditions
+init <- list()
+for(j in 1:nchain){
+  init[[j]] <- list(sd_add = 0.3, sd_site=0.5,
+                        #.RNG.name = "base::Wichmann-Hill",
+                        #.RNG.seed = as.numeric(chain_seeds[j]),
+                        x = data$y)
+}
+
+## Initialize jags model
+j.model.rwse <- jags.model(file = textConnection(RandomWalk.SiteRandomEffect),
+                          data = data,
+                          inits = init,
+                          n.chains = 3)
+
+## Burn in jags model
+jags.out   <- coda.samples(model = j.model.rwse, variable.names = c("sd_add"), n.iter = 1000)
+  
+## Diagnostic plots
+plot(jags.out)
+
+## Run JAGS model again and sample from the posteriors
+m_rwse  <- coda.samples(model = j.model.rwse,
+                      variable.names = c("sd_add","sd_site","site","sd_obs","x","y"),
+                      n.iter = 3000,
+                      thin = 1)
+
+plot(m_rwse[,c(1,803)])
+site_rwse = as.matrix(m_rwse[,grep("site",colnames(m_rwse[[1]]))[2:5]])
+sd_rwse = as.matrix(m_rwse[,grep("sd",colnames(m_rwse[[1]]))])
+pred_rwse = as.matrix(m_rwse[,grep("x",colnames(m_rwse[[1]]))])
+
+## Use tidybayes to clean up model output
+model_pred_mrwse = m_rwse %>%
+      spread_draws(x[day,site],y[day,site]) %>%
+      filter(.chain == 1) %>% 
+      rename(ensemble = .iteration) %>%
+      mutate(time = time_hist$time[day])%>%
+      ungroup() %>%
+      select(time, x, y, ensemble,site)
+
+## Get credible intervals
+model_ci_rwse = model_pred_mrwse %>% group_by(time,site) %>%
+          summarise(mean.x = mean(x),
+                  mean.y = mean(y),
+                  upper.x = quantile(x, 0.975),
+                  upper.y = quantile(y, 0.975),
+                  lower.x = quantile(x, 0.025),
+                  lower.y = quantile(y, 0.025),.groups = "drop")
+
+## Change site names back to NEON abbreviations
+model_ci_rwse$site = gsub(1, "SERC", model_ci_rwse$site)
+model_ci_rwse$site = gsub(2, "HARV", model_ci_rwse$site)
+model_ci_rwse$site = gsub(3, "UNDE", model_ci_rwse$site)
+model_ci_rwse$site = gsub(4, "GRSM", model_ci_rwse$site)
+
+## Plot the model output
+ggplot(data=model_ci_rwse,aes(x = time, y = mean.x)) +
+        #geom_point(shape=1) + 
+        geom_point(aes(x=time,y=mean.y),color="red",shape=3) +
+        geom_ribbon(aes(ymin = lower.x, ymax = upper.x), 
+                    alpha = 0.2, color = "lightblue", 
+                    fill = "lightblue") +
+        #geom_point(data = obs, aes(x = time, y = obs), color = "purple",shape=8) +
+        labs(x = "Date", y = "gcc_90") +
+        facet_wrap(~as.factor(site))+
+        theme_bw()
+
+save(site_rwse,sd_rwse,pred_rwse,model_pred_mrwse,model_ci_rwse,file="RandomWalkSiteRandomEffect_ModelOutput.RData",compress=T)
+
+```
+
+## Jags model for model 3 run
+```{r}
+## Create data list
+data = list(y=as.matrix(p.driver.wide[,2:5]),
+            sd_obs = p.driver.sd$p.sd,
+            n = nrow(p.driver.wide),
+            ns = 4,
+            Driver = p.driver.wide[,7:10],
+            x_ic = 0.3)
+
+## Set chain number and seeds
+nchain = 3
+chain_seeds <- c(200,800,1400)
+
+## Set initial conditions
+init <- list()
+for(j in 1:nchain){
+  init[[j]] <- list(sd_add = 0.3, sd_site=0.5,
+                        #.RNG.name = "base::Wichmann-Hill",
+                        #.RNG.seed = as.numeric(chain_seeds[j]),
+                        x = data$y)
+}
+
+## Initialize jags model
+j.model.rwdse <- jags.model(file = textConnection(RandomWalk.Driver.SiteRandomEffect),
+                          data = data,
+                          inits = init,
+                          n.chains = 3)
+
+## Burn in jags model
+jags.out   <- coda.samples(model = j.model.rwdse, variable.names = c("sd_add"), n.iter = 1000)
+  
+## Diagnostic plots
+plot(jags.out)
+
+## Run JAGS model again and sample from the posteriors
+m_rwdse   <- coda.samples(model = j.model.rwdse,
+                      variable.names = c("sd_add","sd_site","site","sd_obs","betaDriver","x","y"),
+                      n.iter = 3000,
+                      thin = 1)
+
+plot(m_rwdse[,c(1,2,804)])
+
+## Create parameter matrices for use in uncertainty analysis
+
+## Site random effect paramaters
+site_rwdse = m_rwdse[,grep("site",colnames(m_rwdse[[1]]))[2:5]]
+site_rwdse = as.matrix(site_rwdse)
+
+## Precision parameters
+sd_rwdse = m_rwdse[,grep("sd",colnames(m_rwdse[[1]]))]
+sd_rwdse = as.matrix(sd_rwdse)
+
+## Beta parameters
+beta_rwdse = m_rwdse[,grep("beta",colnames(m_rwdse[[1]]))]
+beta_rwdse = as.matrix(beta_rwdse)
+
+## Precitions 
+pred_rwdse = m_rwdse[,grep("x",colnames(m_rwdse[[1]]))]
+pred_rwdse = as.matrix(pred_rwdse)
+
+
+## Use tidybayes to clean up model output for time series visualization
+model_pred.rwdse = m_rwdse %>%
+      spread_draws(x[day,site],y[day,site]) %>%
+      filter(.chain == 1) %>% 
+      rename(ensemble = .iteration) %>%
+      mutate(time = p.driver.wide$time[day])%>%
+      ungroup() %>%
+      select(time, x, y, ensemble,site)
+
+## Get credible intervals
+model_ci.rwdse = model_pred.rwdse %>% group_by(time,site) %>%
+          summarise(mean.x = mean(x),
+                  mean.y = mean(y),
+                  upper.x = quantile(x, 0.975),
+                  upper.y = quantile(y, 0.975),
+                  lower.x = quantile(x, 0.025),
+                  lower.y = quantile(y, 0.025),.groups = "drop")
+
+## Change site names back to NEON abbreviations
+model_ci.rwdse$site = gsub(1, "SERC", model_ci.rwdse$site)
+model_ci.rwdse$site = gsub(2, "HARV", model_ci.rwdse$site)
+model_ci.rwdse$site = gsub(3, "UNDE", model_ci.rwdse$site)
+model_ci.rwdse$site = gsub(4, "GRSM", model_ci.rwdse$site)
+
+## Plot the model output
+ggplot(data=model_ci.rwdse,aes(x = time, y = mean.x)) +
+        #geom_point(shape=1) + 
+        geom_point(aes(x=time,y=mean.y),color="red",shape=3) +
+        geom_ribbon(aes(ymin = lower.x, ymax = upper.x), 
+                    alpha = 0.2, color = "lightblue", 
+                    fill = "lightblue") +
+        #geom_point(data = obs, aes(x = time, y = obs), color = "purple",shape=8) +
+        labs(x = "Date", y = "gcc_90") +
+        facet_wrap(~as.factor(site))+
+        theme_bw()
+save(site_rwdse,sd_rwdse,beta_rwdse,pred_rwdse,model_pred.rwdse,model_ci.rwdse,file="RandomWalkDriverSiteRandomEffect_ModelOutput.RData")
+
+```
+
+## Jags run for model 4: driver and site random effect
+```{r}
+## Create data list
+data = list(y=as.matrix(p.driver.wide[,2:5]),
+            sd_obs = p.driver.sd$p.sd,
+            n = nrow(p.driver.wide),
+            ns = 4,
+            Driver = p.driver.wide[,7:10],
+            x_ic = 0.3)
+
+## Set chain number and seeds
+nchain = 3
+chain_seeds <- c(200,800,1400)
+
+## Set initial conditions
+init <- list()
+for(j in 1:nchain){
+  init[[j]] <- list(sd_add = 0.3, sd_site=0.5,
+                        #.RNG.name = "base::Wichmann-Hill",
+                        #.RNG.seed = as.numeric(chain_seeds[j]),
+                        x = data$y)
+}
+
+## Initialize jags model
+j.model.dse <- jags.model(file = textConnection(Driver.SiteRandomEffect),
+                          data = data,
+                          inits = init,
+                          n.chains = 3)
+
+## Burn in jags model
+jags.out   <- coda.samples(model = j.model.dse, variable.names = c("sd_add"), n.iter = 1000)
+  
+## Diagnostic plots
+plot(jags.out)
+
+## Run JAGS model again and sample from the posteriors
+m_dse   <- coda.samples(model = j.model.dse,
+                      variable.names = c("sd_add","sd_site","site","sd_obs","betaDriver","x","y"),
+                      n.iter = 3000,
+                      thin = 1)
+
+plot(m_dse[,c(1,2,804)])
+
+## Create parameter matrices for use in uncertainty analysis
+
+## Site random effect paramaters
+site_mdse = m_dse[,grep("site",colnames(m_dse[[1]]))[2:5]]
+site_mdse = as.matrix(site_mdse)
+
+## Precision parameters
+sd_mdse = m_dse[,grep("sd",colnames(m_dse[[1]]))]
+sd_mdse = as.matrix(sd_mdse)
+
+## Beta parameters
+beta_mdse = m_dse[,grep("beta",colnames(m_dse[[1]]))]
+beta_mdse = as.matrix(beta_mdse)
+
+## Precitions 
+pred_mdse = m_dse[,grep("x",colnames(m_dse[[1]]))]
+pred_mdse = as.matrix(pred_mdse)
+
+
+## Use tidybayes to clean up model output for time series visualization
+model_pred.dse = m_dse %>%
+      spread_draws(x[day,site],y[day,site]) %>%
+      filter(.chain == 1) %>% 
+      rename(ensemble = .iteration) %>%
+      mutate(time = p.driver.wide$time[day])%>%
+      ungroup() %>%
+      select(time, x, y, ensemble,site)
+
+## Get credible intervals
+model_ci.dse = model_pred.dse %>% group_by(time,site) %>%
+          summarise(mean.x = mean(x),
+                  mean.y = mean(y),
+                  upper.x = quantile(x, 0.975),
+                  upper.y = quantile(y, 0.975),
+                  lower.x = quantile(x, 0.025),
+                  lower.y = quantile(y, 0.025),.groups = "drop")
+
+## Change site names back to NEON abbreviations
+model_ci.dse$site = gsub(1, "SERC", model_ci.dse$site)
+model_ci.dse$site = gsub(2, "HARV", model_ci.dse$site)
+model_ci.dse$site = gsub(3, "UNDE", model_ci.dse$site)
+model_ci.dse$site = gsub(4, "GRSM", model_ci.dse$site)
+
+## Plot the model output
+ggplot(data=model_ci.dse,aes(x = time, y = mean.x)) +
+        #geom_point(shape=1) + 
+        geom_point(aes(x=time,y=mean.y),color="red",shape=3) +
+        geom_ribbon(aes(ymin = lower.x, ymax = upper.x), 
+                    alpha = 0.2, color = "lightblue", 
+                    fill = "lightblue") +
+        #geom_point(data = obs, aes(x = time, y = obs), color = "purple",shape=8) +
+        labs(x = "Date", y = "gcc_90") +
+        facet_wrap(~as.factor(site))+
+        theme_bw()
+list = c(site_mdse,sd_mdse,beta_mdse))
+save(site_mdse,sd_mdse,beta_mdse,pred_mdse,model_pred.dse,model_ci.dse,file="DriverSiteRandomEffect_ModelOutput.RData")
+
+```
+
+## Random walk and site random effects forecast function
+```{r}
+forecastP.RWSRE <- function(IC,site,Q=0,n=1,NT){
+  P <- matrix(NA,n,NT)  ## storage
+  P.prev <- IC           ## initialize
+  for(t in 1:NT){
+    mu = P.prev + site  
+    P[,t] <- rnorm(n,mu,Q)                         ## predict next step
+    P.prev <- P[,t]                                 ## update IC
+  }
+  
+  ## Make credible intervals
+  P_forecast_CI = apply(P,2,quantile,c(0.025,0.5,0.975))
+  
+  ## Create a data frame of the precitions
+  forecast_predictions = data.frame(forecast_gcc_low = P_forecast_CI[1,],
+                                  forecast_gcc_med = P_forecast_CI[2,],
+                                  forecast_gcc_high = P_forecast_CI[3,],
+                                  date = future_temp$datetime[1:34])
+  
+  P_forecast = list(P,forecast_predictions)
+  
+  return(P_forecast)
+}
+
+```
+
+## Random walk, driver, and site random effect forecasting function
+```{r}
+forecastP.RWTDSRE <- function(IC,site,betaDriver, Driver, Q=0,n=1,NT){
+
+  P <- matrix(NA,n,NT)  ## storage
+  P.prev <- IC  ## initialize
+
+  for(t in 1:NT){
+    mu = P.prev + betaDriver * Driver[[colnames(Driver)[t]]] + site  
+    mu
+    P[,t] <- rnorm(n,mu,Q)                          ## predict next step
+    P.prev <- P[,t]                                 ## update IC
+    P
+  }
+  ## Make credible intervals
+  P_forecast_CI = apply(P,2,quantile,c(0.025,0.5,0.975))
+  
+  ## Create a data frame of the precitions
+  forecast_predictions = data.frame(forecast_gcc_low = P_forecast_CI[1,],
+                                  forecast_gcc_med = P_forecast_CI[2,],
+                                  forecast_gcc_high = P_forecast_CI[3,],
+                                  date = future_temp$datetime[1:34])
+  
+  P_forecast = list(P,forecast_predictions)
+  
+  return(P_forecast)
+}
+```
+
+## Driver and Site Random Effect Function 
+```{r}
+forecastP.DSE <- function(IC,site,betaDriver, Driver, Q=0,n=1,NT){
+
+  P <- matrix(NA,n,NT)  ## storage
+  #P.prev <- IC  ## initialize
+
+  for(t in 1:NT){
+    mu = betaDriver * Driver[[colnames(Driver)[t]]] + site  
+    P[,t] <- rnorm(n,mu,Q)                          ## predict next step
+    #P.prev <- P[,t]                                 ## update IC
+    #P
+  }
+  ## Make credible intervals
+  P_forecast_CI = apply(P,2,quantile,c(0.025,0.5,0.975))
+  
+  ## Create a data frame of the precitions
+  forecast_predictions = data.frame(forecast_gcc_low = P_forecast_CI[1,],
+                                  forecast_gcc_med = P_forecast_CI[2,],
+                                  forecast_gcc_high = P_forecast_CI[3,],
+                                  date = future_temp$datetime[1:34])
+  
+  P_forecast = list(P,forecast_predictions)
+  
+  return(P_forecast)
+}
+```
+
+
+
+```{r}
+future_temp = future_drivers_ensembles %>% 
+  filter(site_id %in% study_sites,
+         variable == "air_temperature") %>% 
+  group_by(datetime,site_id) %>%
+  summarise(temperature = mean(driver_value,na.rm=TRUE),.groups="drop") %>%
+  pivot_wider(names_from = site_id, values_from = temperature ) %>%
+  collect()
+
+future_sunlight = future_drivers_ensembles %>% 
+  filter(site_id %in% study_sites,
+         variable == "surface_downwelling_shortwave_flux_in_air") %>% 
+  group_by(datetime,site_id) %>%
+  summarise(sunlight = mean(driver_value,na.rm=TRUE),.groups="drop") %>%
+  pivot_wider(names_from = datetime, values_from = sunlight) %>%
+  collect()
+
+future_precip = future_drivers_ensembles %>% 
+  filter(site_id %in% study_sites,
+         variable == "precipitation_flux") %>% 
+  group_by(datetime,site_id) %>%
+  summarise(precip = mean(driver_value,na.rm=TRUE),.groups="drop") %>%
+  pivot_wider(names_from = datetime, values_from = precip) %>%
+  collect()
+
+save(future_precip,future_sunlight,future_temp,file="FutureMeanDrivers.RData")
+
+```
+
+```{r}
+## Set number of iterations
+Nmc = 2000
+
+## Subsample for paramters
+prow = sample.int(nrow(pred_rwdse),Nmc,replace=TRUE)
+
+
+I_forecast_rwse = list()
+IP_forecast_rwse = list()
+IPP_forecast_rwse = list()
+IPPR_forecast_rwse = list()
+
+for (i in 1:4){
+I_forecast_rwse[[i]] = forecastP.RWSRE(IC=pred_rwse[prow,801*i],
+                  site=mean(site_rwse[,i]),
+                  Q=0,
+                  n=Nmc,
+                  NT=34)
+IP_forecast_rwse[[i]] = forecastP.RWSRE(IC=pred_rwse[prow,801*i],
+                  site=site_rwse[prow,i],
+                  Q=0,
+                  n=Nmc,
+                  NT=34)
+IPP_forecast_rwse[[i]] = forecastP.RWSRE(IC=pred_rwse[prow,801*i],
+                  site=site_rwse[prow,i],
+                  Q=sd_rwse[prow,1],
+                  n=Nmc,
+                  NT=34)
+siteNew.mc <- rnorm(Nmc,0,sd_rwse[,803])
+IPPR_forecast_rwse[[i]] = forecastP.RWSRE(IC=pred_rwse[prow,801*i],
+                  site=siteNew.mc,
+                  Q=sd_rwse[prow,1],
+                  n=Nmc,
+                  NT=34)
+}
+
+for (i in 1:4){
+ggplot(data=IPPR_forecast_rwse[[i]][[2]],aes(x=date,y=forecast_gcc_med)) +
+  geom_ribbon(aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "dark magenta", 
+                    fill = "dark magenta")+
+  geom_ribbon(data=IPP_forecast_rwse[[i]][[2]],aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "slate blue", 
+                    fill = "slate blue")+
+  geom_ribbon(data=IP_forecast_rwse[[i]][[2]], 
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "red", 
+                    fill = "red")+
+  geom_ribbon(data=I_forecast_rwse[[i]][[2]], 
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "light blue", 
+                    fill = "light blue")+
+  geom_line(aes(x=date,y=forecast_gcc_med))+
+  theme_classic()
+  ggsave(paste0("Uncert_Propogating_RandomWalkRandomEffect_",unique(future_sun_ensembles$site_id)[i],"_figure.pdf"), device = "pdf")
+}
+save(I_forecast_rwse,IP_forecast_rwse,IPP_forecast_rwse,IPPR_forecast_rwse,file="RandomWalkSiteRandomEffect_ForecastOutput.RData")
+
+
+```
+
+## Random walk, driver, and site random effect forecast
+```{r}
+
+I_forecast = list()
+IP_forecast = list()
+IPP_forecast = list()
+IPPR_forecast = list()
+## Forecasts while propagating partitioned uncertainty
+## Initial condition uncertainty
+for (i in 1:4){
+I_forecast[[i]] =forecastP.RWTDSRE(IC=pred_rwdse[prow,801*i],
+                  site=mean(site_rwdse[,i]),
+                  Q=0,
+                  n=Nmc,
+                  Driver = future_sunlight[i,2:36],
+                  betaDriver = mean(beta_rwdse[,1]),
+                  NT=34)
+
+## Initial condition and parameter uncertainty
+IP_forecast[[i]] = forecastP.RWTDSRE(IC=pred_rwdse[prow,801*i],
+                  site=site_rwdse[prow,i],
+                  Q=0,
+                  n=Nmc,
+                  Driver = future_sunlight[i,2:36],
+                  betaDriver = beta_rwdse[prow,1],
+                  NT=34)
+
+## Initial condition, parameter, and driver uncertainty
+## Get ensembles of future drivers not just driver means
+future_sun_ensembles = future_drivers_ensembles %>% 
+  filter(variable == "surface_downwelling_shortwave_flux_in_air") %>% 
+  filter(site_id %in% study_sites) %>% pivot_wider(names_from = datetime, values_from = driver_value)
+future_sun_ensembles_site =future_sun_ensembles[future_sun_ensembles$site_id == unique(future_sun_ensembles$site_id)[i],]
+## Randomly subsample
+drow = sample.int(nrow(future_sun_ensembles_site[1:30,]),Nmc,replace=TRUE)
+
+##Forecast
+IPD_forecast[[i]] = forecastP.RWTDSRE(IC=pred_rwdse[prow,801*i],
+                  site=site_rwdse[prow,i],
+                  Q=0,
+                  n=Nmc,
+                  Driver = future_sun_ensembles_site[drow,4:37],
+                  betaDriver = beta_rwdse[prow,1],
+                  NT=34)
+
+## Initial condition, parameter, driver, and process uncertainty
+IPDP_forecast[[i]] = forecastP.RWTDSRE(IC=pred_rwdse[prow,801*i],
+                  site=site_rwdse[prow,i],
+                  Q=sd_rwdse[prow,1],
+                  n=Nmc,
+                  Driver = future_sun_ensembles_site[drow,4:37],
+                  betaDriver = beta_rwdse[prow,1],
+                  NT=34)
+
+## Out of sample site uncertainty and uncertainty of initial conditions, parameters, drivers, and process
+siteNew.mc <- rnorm(Nmc,0,sd_rwdse[,803])
+
+IPDPR_forecast[[i]] = forecastP.RWTDSRE(IC=pred_rwdse[prow,801*i],
+                  site=siteNew.mc,
+                  Q=sd_rwdse[prow,1],
+                  n=Nmc,
+                  Driver = future_sun_ensembles_site[drow,4:37],
+                  betaDriver = beta_rwdse[prow,1],
+                  NT=34)
+
+}
+save(I_forecast,IP_forecast,IPD_forecast,IPDP_forecast,IPDPR_forecast,file="RandomWalkDriverSiteRandomEffect_ForecastOutput.RData")
+
+for (i in 1:4){
+ggplot(data=IPDPR_forecast[[i]][[2]],aes(x=date,y=forecast_gcc_med)) +
+  geom_ribbon(aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "dark magenta", 
+                    fill = "dark magenta")+
+  geom_ribbon(data=IPDP_forecast[[i]][[2]],aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "slate blue", 
+                    fill = "slate blue")+
+  geom_ribbon(data=IPD_forecast[[i]][[2]],
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "gold", 
+                    fill = "gold")+
+  geom_ribbon(data=IP_forecast[[i]][[2]], 
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "red", 
+                    fill = "red")+
+  geom_ribbon(data=I_forecast[[i]][[2]], 
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 0.5, color = "light blue", 
+                    fill = "light blue")+
+  geom_line(aes(x=date,y=forecast_gcc_med))+
+  theme_classic()
+  ggsave(paste0("Uncert_Propogating_RandomWalkDriverRandomEffect_",unique(future_sun_ensembles$site_id)[i],"_figure.pdf"), device = "pdf")
+}
+
+
+var.rel=list()
+for (i in 1:4){
+I.var = apply(I_forecast[[i]][[1]],MARGIN=2,FUN=var)
+IP.var = apply(IP_forecast[[i]][[1]],MARGIN=2,FUN=var)
+IPD.var = apply(IPD_forecast[[i]][[1]],MARGIN=2,FUN=var)
+IPDP.var = apply(IPDP_forecast[[i]][[1]],MARGIN=2,FUN=var)
+IPDPR.var = apply(IPDPR_forecast[[i]][[1]],MARGIN=2,FUN=var)
+var.mat = rbind(I.var,IP.var,IPD.var,IPDP.var,IPDPR.var)
+var.rel[[i]] = as.data.frame(t(apply(var.mat,2,function(x) {x/max(x)})))
+var.rel[[i]]$date = I_forecast[[i]][[2]]$date
+}
+
+var.rel[[3]]
+for (i in 1:4){
+ggplot(data=var.rel[[i]],aes(x=date, y=IPDPR.var))+
+    geom_ribbon(data=var.rel[[i]],aes(ymin = rep(0,34), ymax = IPDPR.var), 
+                    color = "dark magenta", 
+                    fill = "dark magenta")+
+    geom_ribbon(data=var.rel[[i]],aes(ymin = rep(0,34), ymax = IPDP.var), 
+                    color = "slate blue", 
+                    fill = "slate blue")+
+    geom_ribbon(data=var.rel[[i]],aes(ymin = rep(0,34), ymax = IPD.var), 
+                    color = "gold", 
+                    fill = "gold")+
+    geom_ribbon(data=var.rel[[i]],aes(ymin = rep(0,34), ymax = IP.var), 
+                    color = "red", 
+                    fill = "red")+
+    geom_ribbon(data=var.rel[[i]],aes(ymin = rep(0,34), ymax = I.var), 
+                    color = "light blue", 
+                    fill = "light blue")
+    ggsave(paste0("Uncert_Partitioning_RandomWalkDriverRandomEffect_",unique(future_sun_ensembles$site_id)[i],"_figure.pdf"), device = "pdf")
+
+}
+
+```
+
+## Forecast for driver and random effect model
+```{r}
+I_forecast_dse = list()
+IP_forecast_dse = list()
+IPP_forecast_dse = list()
+IPPR_forecast_dse = list()
+for(i in 1:4){
+I_forecast_dse[[i]] =forecastP.DSE(IC=pred_mdse[prow,801*i],
+                  site=mean(site_mdse[,i]),
+                  Q=0,
+                  n=Nmc,
+                  Driver = future_sunlight[i,2:36],
+                  betaDriver = mean(beta_mdse[,1]),
+                  NT=34)
+IP_forecast_dse[[i]] = forecastP.DSE(IC=pred_mdse[prow,801*i],
+                  site=site_mdse[prow,i],
+                  Q=0,
+                  n=Nmc,
+                  Driver = future_sunlight[i,2:36],
+                  betaDriver = beta_mdse[prow,1],
+                  NT=34)
+future_sun_ensembles = future_drivers_ensembles %>% 
+  filter(variable == "surface_downwelling_shortwave_flux_in_air") %>% 
+  filter(site_id %in% study_sites) %>% pivot_wider(names_from = datetime, values_from = driver_value)
+future_sun_ensembles_site =future_sun_ensembles[future_sun_ensembles$site_id == unique(future_sun_ensembles$site_id)[i],]
+
+## Randomly subsample
+drow = sample.int(nrow(future_sun_ensembles_site[1:30,]),Nmc,replace=TRUE)
+
+IPD_forecast_dse[[i]] = forecastP.DSE(IC=pred_mdse[prow,801*i],
+                  site=site_mdse[prow,i],
+                  Q=0,
+                  n=Nmc,
+                  Driver = future_sun_ensembles_site[drow,4:37],
+                  betaDriver = beta_mdse[prow,1],
+                  NT=34)
+
+IPDP_forecast_dse[[i]] = forecastP.DSE(IC=pred_mdse[prow,801*i],
+                  site=site_mdse[prow,i],
+                  Q=sd_mdse[prow,1],
+                  n=Nmc,
+                  Driver = future_sun_ensembles_site[drow,4:37],
+                  betaDriver = beta_mdse[prow,1],
+                  NT=34)
+
+se_new_mdse <- rnorm(Nmc,0,sd_mdse[,803])
+IPDPR_forecast_dse[[i]] = forecastP.DSE(IC=pred_mdse[prow,801*i],
+                  site=se_new_mdse,
+                  Q=sd_mdse[prow,1],
+                  n=Nmc,
+                  Driver = future_sunGRSM[drow,4:37],
+                  betaDriver = beta_mdse[prow,1],
+                  NT=34)
+}
+
+save(I_forecast_dse,IP_forecast_dse,IPD_forecast_dse,IPDP_forecast_dse,IPDPR_forecast_dse,file="DriverSiteRandomEffect_ForecastOutput.RData")
+
+for (i in 1:4){
+ggplot(data=IPDP_forecast_dse[[i]][[2]],aes(x=date,y=forecast_gcc_med)) +
+  #geom_ribbon(aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+   #                 alpha = 1, color = "dark magenta", 
+    #                fill = "dark magenta")+
+  geom_ribbon(data=IPDP_forecast_dse[[i]][[2]],aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 1, color = "slate blue", 
+                    fill = "slate blue")+
+  geom_ribbon(data=IPD_forecast_dse[[i]][[2]],
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 1, color = "gold", 
+                    fill = "gold")+
+  geom_ribbon(data=IP_forecast_dse[[i]][[2]], 
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 1, color = "red", 
+                    fill = "red")+
+  geom_ribbon(data=I_forecast_dse[[i]][[2]], 
+              aes(ymin = forecast_gcc_low, ymax = forecast_gcc_high), 
+                    alpha = 1, color = "light blue", 
+                    fill = "light blue")+
+  geom_line(aes(x=date,y=forecast_gcc_med))+
+  theme_classic()
+  ggsave(paste0("Uncert_Propogating_DriverRandomEffect_",unique(future_sun_ensembles$site_id)[i],"_figure.pdf"), device = "pdf")
+}
+
+var.rel.dse=list()
+for (i in 1:4){
+I.var = apply(I_forecast_dse[[i]][[1]],MARGIN=2,FUN=var)
+IP.var = apply(IP_forecast_dse[[i]][[1]],MARGIN=2,FUN=var)
+IPD.var = apply(IPD_forecast_dse[[i]][[1]],MARGIN=2,FUN=var)
+IPDP.var = apply(IPDP_forecast_dse[[i]][[1]],MARGIN=2,FUN=var)
+#IPDPR.var = apply(IPDPR_forecast_dse[[i]][[1]],MARGIN=2,FUN=var)
+var.mat = rbind(I.var,IP.var,IPD.var,IPDP.var)
+var.rel.dse[[i]] = as.data.frame(t(apply(var.mat,2,function(x) {x/max(x)})))
+var.rel.dse[[i]]$date = I_forecast_dse[[i]][[2]]$date
+}
+
+var.rel.dse[[3]]
+for (i in 1:4){
+ggplot(data=var.rel.dse[[i]],aes(x=date, y=IPDPR.var))+
+    #geom_ribbon(data=var.rel.dse[[i]],aes(ymin = rep(0,34), ymax = IPDPR.var), 
+     #               color = "dark magenta", 
+      #              fill = "dark magenta")+
+    geom_ribbon(data=var.rel.dse[[i]],aes(ymin = rep(0,34), ymax = IPDP.var), 
+                    color = "slate blue", 
+                    fill = "slate blue")+
+    geom_ribbon(data=var.rel.dse[[i]],aes(ymin = rep(0,34), ymax = IPD.var), 
+                    color = "gold", 
+                    fill = "gold")+
+    geom_ribbon(data=var.rel.dse[[i]],aes(ymin = rep(0,34), ymax = IP.var), 
+                    color = "red", 
+                    fill = "red")+
+    geom_ribbon(data=var.rel.dse[[i]],aes(ymin = rep(0,34), ymax = I.var), 
+                    color = "light blue", 
+                    fill = "light blue")
+    ggsave(paste0("Uncert_Partitioning_DriverRandomEffect_",unique(future_sun_ensembles$site_id)[i],"_figure.pdf"), device = "pdf")
+
+}
+
+
+```
+
+## Submit Forecast function
+## Not using yet
+
+
+```{r}
+"submit_forecast <- function(forecast,team_info,submit=FALSE){
+  
+  ## Forecast output file name in standards requires for Challenge.  
+  ## csv.gz means that it will be compressed
+  forecast_file <- paste0("Phenology","-",min(forecast$time),"-",team_info$team_name,".csv.gz")
+  
+  ## Write csv to disk
+  write_csv(forecast, forecast_file)
+  
+  ## Confirm that output file meets standard for Challenge
+  neon4cast::forecast_output_validator(forecast_file)
+  
+  ## Generate metadata
+  model_metadata = list(
+    forecast = list(
+      model_description = list(
+        forecast_model_id =  system("git rev-parse HEAD", intern=TRUE), ## current git SHA
+        name = "Random walk model of phenology", 
+        type = "empirical",  
+        repository = "https://github.com/ckowals/NDbio4cast/Phenofreaks" ## Git repo
+      ),
+      initial_conditions = list(
+        status = "absent"
+      ),
+      drivers = list(
+        status = "absent",
+        complexity = 1, #Just air temperature
+        propagation = list( 
+          type = "ensemble", 
+          size = 31) 
+      ),
+      parameters = list(
+        status = "absent"
+      ),
+      random_effects = list(
+        status = "propagates",
+        complexity = 1
+      ),
+      process_error = list(
+        status = "propogates"
+      ),
+      obs_error = list(
+        status = "propogates"
+      )
+    )
+  )
+  
+  metadata_file <- neon4cast::generate_metadata(forecast_file, team_info$team_list, model_metadata)
+  
+  if(submit){
+    neon4cast::submit(forecast_file = forecast_file, metadata = metadata_file, ask = FALSE)
+  }
+  
+}"
+```
+
+```{r}
+
+```

@@ -1,0 +1,352 @@
+---
+title: "ClimateDriverForecastEnsemble"
+author: "Phenofreaks"
+date: "11/28/2022"
+output: html_document
+---
+
+```{r}
+##' Download Phenocam data
+##'
+##' @param URL  web address where data is archived
+##' @param skipNum The number of lines to skip (22 for 1day file and 17 for roistats file)
+##' @export
+download.phenocam <- function(URL,skipNum=22) {
+  ## check that we've been passed a URL
+  if (length(URL) == 1 & is.character(URL) & substr(URL,1,4)=="http") {
+    
+    ## read data
+    dat <- read.csv(URL,skip = skipNum)
+    
+    ## convert date
+    dat$date <- as.Date(as.character(dat$date))
+    
+    return(dat)
+  } else {
+    print(paste("download.phenocam: Input URL not provided correctly",URL))
+  }
+}
+```
+
+```{r}
+calculate.phenocam.uncertainty <- function(dat,dates,target="gcc") {
+  sds <- rep(NA,length(dates))
+  nboot <- 50
+  dat$date = dat$datetime
+
+  for(d in 1:length(dates)){
+    dailyDat <- dat[dat$date==dates[d],]
+    if(nrow(dailyDat)>0){
+      dailyDat <- dailyDat[!is.na(dailyDat[,target]),]
+      nrows <- nrow(dailyDat)
+      gcc_90s <- rep(NA,nboot)
+      for(j in 1:nboot){
+        gcc_vec  = pull(dailyDat[,target])
+        gcc_90s[j] <- quantile(gcc_vec[sample(x = 1:nrows,size = nrows,replace = T)],0.90)
+      }  
+      sds[d] <- sd(gcc_90s)
+    }else{
+      sds[d] <- NA
+    }
+  }
+  return(sds)
+}
+
+```
+
+## Read in site and phenology data
+Read in site data and most up to date phenology data quantified from phenocam data by the ecoforecasting initiative. We are only interested in deciduous broadleaf forests. This can be filtered in the site_data according to the pheno_cam vegetation type. The remaining sites can be used to filter the phenology data. 
+
+```{r}
+
+library(rjags)
+library(tidyr)
+library(tidybayes)
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(phenology == 1, phenocam_vegetation == "deciduous broadleaf",)
+head(site_data)
+
+NeonPheno =readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/phenology/phenology-targets.csv.gz", guess_max = 1e6) |> 
+  dplyr::filter(datetime >= '2020-09-25')
+  na.omit()
+head(NeonPheno)
+```
+
+## Manipulate phenology data.
+1) Remove sites that are not deciduous broadleaf (sites not present in the site_data).
+2) Add season column to group data based on spring green up or fall color change and leaf drop
+
+```{r}
+library(dplyr)
+library(tidyr)
+sites <- unique(site_data$field_site_id)
+
+Pheno_decid = NeonPheno %>% #Filter sites accord to deciduous broadleaf
+  filter(site_id %in% unique(site_data$field_site_id)) 
+
+Pheno_seasons = Pheno_decid %>% #Add season variable
+  mutate(season = case_when(lubridate::month(datetime) <= 6 ~ "spring",
+                            lubridate::month(datetime) >= 7 ~ "fall")) 
+```
+
+
+## Calculate gcc and rcc uncertainty
+Use the function defined above to find the standard deviation in gcc and rcc uncertainty. 
+
+```{r}
+Pheno_Wide = Pheno_seasons %>% pivot_wider(names_from="variable",values_from="observation")
+
+gcc.uncert =calculate.phenocam.uncertainty(dat=Pheno_Wide,
+                               dates=unique(lubridate::as_date(Pheno_Wide$datetime)),
+                               target="gcc_90")
+rcc.uncert = calculate.phenocam.uncertainty(dat=Pheno_Wide,
+                                          dates=unique(lubridate::as_date(Pheno_Wide$datetime)),
+                                          target="rcc_90")
+uncert.df = data.frame(datetime=unique(lubridate::as_date(Pheno_Wide$datetime)),
+                      gcc_sd = gcc.uncert,
+                      rcc_sd = rcc.uncert)
+Pheno_Wide$datetime = lubridate::as_date(Pheno_Wide$datetime)
+Pheno.long = Pheno_Wide %>% pivot_longer(cols=c("gcc_90","rcc_90"),
+                            names_to = c("variable"),
+                            values_to="observed")
+Pheno.uncert.long = uncert.df %>% pivot_longer(cols=c("gcc_sd","rcc_sd"),
+                                               names_to="variable",
+                                               values_to = "sd")
+Pheno.long$variable = gsub("_90","",Pheno.long$variable)
+Pheno.uncert.long$variable = gsub("_sd","",Pheno.uncert.long$variable)
+Pheno.uncert = merge(x=Pheno.long,y=Pheno.uncert.long,by=c("datetime","variable"))
+```
+## Visualize data
+Use ggplot to visualize rcc and gcc data during spring green up and fall color change and leaf drop. Can plot across years or choose a single year
+
+```{r, fig.width=10,fig.height=11}
+library(ggplot2)
+Pheno_Wide %>% 
+  #filter(lubridate::year(datetime)== 2021) %>% #choosing 2021
+  filter(season == "fall") %>% #spring
+  #filter(variable == "gcc_90") %>% #only interested in greeness 
+  ggplot(aes(x=datetime,y=gcc_90)) +
+  geom_point(color="#228b22",size=0.75) + 
+  theme_classic() + 
+  labs(title="Spring phenology", x = "Date", y= "gcc_90") +
+  facet_wrap(~site_id,ncol=5) + 
+  theme(strip.background=element_blank(),panel.spacing=unit(1,"lines"))
+
+Pheno_seasons %>% 
+  filter(lubridate::year(datetime)== 2021) %>% #2021 YEAR
+  filter(season == "fall") %>% # Fall
+  ggplot(aes(x=datetime,y=observation,shape=variable)) + #Plot greeness and redness
+  geom_point(aes(color=variable),size=0.75) + 
+  scale_color_manual(values = c("#daa520","#228b22")) + 
+  theme_classic() + 
+  facet_wrap(~site_id,ncol=5) +
+  labs(title="Fall phenology", x = "Date", y= "Reflectance value",color="Reflectance index",shape="Reflectance index") + 
+  theme(strip.background=element_blank(),panel.spacing = unit(1,"lines"))
+```
+## Read in climate driver data
+```{r}
+library(neon4cast)
+df_past <- neon4cast::noaa_stage3()
+df_future <- neon4cast::noaa_stage2()
+sites <- c('HARV','UNDE','SERC','GRSM')
+#getting past temperature
+past_temp <- df_past |>
+  dplyr::filter(site_id %in% sites,
+                variable == "air_temperature",
+                
+  ) |>
+  dplyr::collect()
+
+past_temp1 <- past_temp %>% group_by(date = (datetime)) %>%
+  summarise(prediction = mean(prediction))
+
+past_temp1 <- past_temp1 %>% group_by(date = (date)) %>%
+  summarise(prediction = mean(prediction))
+
+daily_temp$date <- as.Date(past_temp1$date)
+daily_temp <- aggregate(daily_temp["prediction"], by=daily_temp["date"], mean)
+temp <- daily_temp$prediction
+temp <- temp[1:795]
+     
+```
+
+
+
+## Define a random walk model that would work on one Neon site
+
+```{r}
+RandomWalk = "
+model{
+  # Priors
+  x[1] ~ dnorm(x_ic,tau_add)
+  tau_obs[1] <- 1 / pow(sd_obs, 2)
+  y[1] ~ dnorm(x[1],tau_obs[1])
+  #added mu prior
+  mu[1] <- b0
+  sd_add  ~ dunif(0.000001, 100)
+  tau_add <- 1/ pow(sd_add, 2)
+  #added beta priors
+  b0 ~ dnorm(0, 0.01) # intercept
+	b1 ~ dnorm(0, 0.01) # slope
+  
+  # Process Model
+  for(t in 2:N){
+  #added mu value, changed how y is distributed to be around mu instead of random walk
+  mu[t] <- b0 + b1*temp[t] 
+    x[t] ~ dnorm(x[t-1], tau_add)
+    tau_obs[t] <- 1 / pow(sd_obs, 2)
+    y[t] ~ dnorm(mu[t], tau_obs[t])
+    
+  }
+}
+"
+```
+
+## the following code produces a hindcast of the 5 sites using the above model
+```{r}
+library(ggplot2)
+phenoDat = Pheno.uncert
+phenoDat = phenoDat[phenoDat$site_id %in% c('HARV','UNDE','SERC','GRSM'),]
+sites <- unique(as.character(phenoDat$site_id))
+target_variables <- c("gcc","rcc")
+target_variables_sd <- c("gcc_sd","rcc_sd")
+
+forecast_length <- 35
+predictions <- array(NA, dim = c(length(target_variables), forecast_length, length(sites), 2000))
+
+forecast_saved <- NULL
+team_name = "phenofreaks" 
+
+for(i in 1:length(target_variables)){
+  
+  for(s in 1:length(sites)){
+    
+    message(paste0("forecasting ",target_variables[i]," at site: ",sites[s]))
+    message("site ", s, " of ", length(sites))
+    
+    forecast_length <- 35
+    
+    sitePhenoDat <- phenoDat[phenoDat$site_id==sites[s],]
+    sitePhenoDat$time <- lubridate::as_date(sitePhenoDat$datetime)
+    
+    #sitePhenoDat <- sitePhenoDat %>% 
+    #  pivot_longer(cols = c(all_of(target_variables), all_of(target_variables_sd)), names_to = "variable", values_to = "values")
+    
+    #start_forecast <- max(sitePhenoDat$time) + lubridate::days(1)
+    start_forecast <- Sys.Date() + lubridate::days(1)
+    
+    sitePhenoDat_variable <- sitePhenoDat %>% 
+      filter(variable == target_variables[1])
+    
+    #sitePhenoDat_sd <- sitePhenoDat %>% 
+      #filter(variable == target_variables_sd[i])
+    #full_time <- tibble::tibble(time = seq(min(sitePhenoDat$time), max(sitePhenoDat$time) + lubridate::days(forecast_length), by = "1 day"))
+    full_time <- tibble::tibble(time = seq(min(sitePhenoDat$time), Sys.Date()  + lubridate::days(forecast_length), by = "1 day"))
+    forecast_start_index <- which(full_time$time == max(sitePhenoDat$time) + lubridate::days(1))
+   sitePhenoDat_variable$observed
+   #changed this to include temp
+    d <- tibble::tibble(time = sitePhenoDat_variable$time,
+                        p=as.numeric(sitePhenoDat_variable$observed),
+                        p.sd=as.numeric(sitePhenoDat_variable$sd),
+                        temp=temp)
+    d <- dplyr::full_join(d, full_time)
+    
+    ggplot(d, aes(x = time, y = p)) +
+      geom_point()
+    
+    
+    #gap fill the missing precisions by assigning them the average sd for the site
+    d$p.sd[!is.finite(d$p.sd)] <- NA
+    d$p.sd[is.na(d$p.sd)] <- mean(d$p.sd,na.rm=TRUE)
+    d$p.sd[d$p.sd == 0.0] <- min(d$p.sd[d$p.sd != 0.0])
+    d$N <- length(d$p)
+    d<- d[1:795,]
+    #added temp in here
+    data <- list(y = d$p,
+                 sd_obs = 0.01,
+                 N = length(d$p),
+                 x_ic = 0.3,
+                 temp=(temp))
+    
+    init_x <- approx(x = d$time[!is.na(d$p)], y = d$p[!is.na(d$p)], xout = d$time, rule = 2)$y
+    
+    #Initialize parameters
+    nchain = 3
+    chain_seeds <- c(200,800,1400)
+    init <- list()
+    for(j in 1:nchain){
+      init[[j]] <- list(sd_add = sd(diff(data$y[!is.na(data$y)])),
+                        .RNG.name = "base::Wichmann-Hill",
+                        .RNG.seed = chain_seeds[j],
+                        x = init_x)
+    }
+    
+    
+    
+    j.model   <- jags.model(file = textConnection(RandomWalk),
+                            data = data,
+                            inits = init,
+                            n.chains = 3)
+    
+    
+    #Run JAGS model as the burn-in
+    jags.out   <- coda.samples(model = j.model,variable.names = c("sd_add"), n.iter = 1000)
+    
+    #Run JAGS model again and sample from the posteriors
+    m   <- coda.samples(model = j.model,
+                        variable.names = c("x","sd_add", "y"),
+                        n.iter = 2000,
+                        thin = 1)
+    
+    #Use TidyBayes package to clean up the JAGS output
+    model_output <- m %>%
+      spread_draws(y[day]) %>%
+      filter(.chain == 1) %>%
+      rename(ensemble = .iteration) %>%
+      mutate(time = full_time$time[day]) %>%
+      ungroup() %>%
+      select(time, y, ensemble)
+    
+    #if(generate_plots){
+      #Pull in the observed data for plotting
+      obs <- tibble(time = d$time,
+                    obs = d$p) %>% 
+        filter(time >= max(sitePhenoDat$time))
+      
+      
+        model_output %>%
+        group_by(time) %>%
+        summarise(mean = mean(y),
+                  upper = quantile(y, 0.975),
+                  lower = quantile(y, 0.025),.groups = "drop") %>%
+        #filter(time >= max(sitePhenoDat$time) ) %>%
+        ggplot(aes(x = time, y = mean)) +
+        geom_ribbon(aes(ymin = lower, ymax = upper), 
+                    alpha = 0.2, color = "lightblue", fill = "lightblue") +
+        geom_line() + 
+        geom_point(data = obs, aes(x = time, y = obs), color = "red") +
+        labs(x = "Date", y = "gcc_90")
+      
+      #Post past and future
+
+      
+      ggsave(paste0("phenology_",sites[s],"_figure.pdf"), device = "pdf")
+    }
+    
+    #Filter only the forecasted dates and add columns for required variable
+    forecast_saved_tmp <- model_output %>%
+      filter(time >= start_forecast) %>%
+      rename(predicted = y) %>%
+      mutate(site_id = sites[s]) %>%
+      mutate(forecast_iteration_id = start_forecast) %>%
+      mutate(forecast_project_id = team_name,
+             variable =  target_variables[i])
+    
+  
+    # Combined with the previous sites
+    forecast_saved <- rbind(forecast_saved, forecast_saved_tmp)
+    
+}
+
+```
+
