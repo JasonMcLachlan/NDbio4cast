@@ -6,7 +6,10 @@ Hayden Gallo: hgallo@nd.edu
 Rachel Badzioch: rbadzioc@nd.edu 
 Nathan Kroeze: nkroeze@nd.edu
 
+*Final Submission, Daily NEE Forecast, 35 Days: FutureModel_2driver-submission.R
 
-Up to date file for our forecast with downwelling shortwave radiation as a driver: FutureModelv2.R
+Year long forecast: FutureModel_2driver_longterm.R
+
+Forecast with downwelling shortwave radiation as a driver: FutureModelv2.R
 
 Random walk forecast: FutureModel.R
